@@ -50,12 +50,12 @@ processes local audio and video end to end, and the static build is GitHub Pages
 
 ## 2. Open — needs a key, a click, or a browser check
 
-- [ ] **Flip the Pages source to GitHub Actions** (one click): GitHub → Settings → Pages →
-      Source → **GitHub Actions**. The repo is currently `build_type: legacy` (`main:/`), so the
-      Jekyll pipeline republishes the raw repository root after every push and overrides the
-      artifact the `Deploy to GitHub Pages` workflow produced. That workflow is already green, so
-      the correct build goes live as soon as the source is switched. The repository-scoped
-      credential cannot make this change (403), so it must be done by hand.
+- [x] **Flip the Pages source to GitHub Actions** (done by hand; the repository-scoped
+      credential cannot change repository settings — `PUT /repos/.../pages` returns 403). The repo
+      had been `build_type: legacy` (`main:/`), so the Jekyll pipeline republished the raw
+      repository root after every push and overrode the workflow's artifact. Now `build_type:
+      workflow`. Note that `gh workflow run` is *also* 403 for this credential, so a deploy is
+      triggered by pushing to `main` rather than by dispatching the workflow.
 
 - [ ] **Google Drive / OneDrive**: the code paths are complete but unverified because no OAuth
       keys exist. Set `VITE_GOOGLE_CLIENT_ID` + `VITE_GOOGLE_API_KEY` (Drive Picker API enabled)

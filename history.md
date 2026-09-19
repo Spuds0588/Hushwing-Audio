@@ -249,6 +249,12 @@ or page errors, `crossOriginIsolated === true`** (so the COI service-worker path
 production build). `mcp.json`, the worklet and the 32 MB `ffmpeg-core.wasm` all served 200 from
 the same origin, i.e. a deployed build really does fetch nothing but itself.
 
+### Pages source switched (post-script)
+
+The Pages source was switched to **GitHub Actions** (`build_type` is now `workflow`). The
+repository-scoped credential cannot make that change (403), and `gh workflow run` is refused for
+the same reason, so the deployment is triggered by pushing to `main`.
+
 ### Still not verified
 
 - Cloud pickers (no OAuth keys in this environment).
