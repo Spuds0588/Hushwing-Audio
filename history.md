@@ -273,6 +273,20 @@ Verified against **https://spuds0588.github.io/Hushwing-Audio/** with the same s
   `ffmpeg-core.js` and `ffmpeg-core.wasm` from `spuds0588.github.io` and made **zero third-party
   requests**, so the "no CDN, nothing leaves your machine" claim holds on the deployed site.
 
+### Documentation pass
+
+- `README.md` rewritten developer-first: the live link is the first thing on the page, followed by
+  quick start, the script table, project layout, testing (including the headed Xvfb command),
+  deployment (with the Pages-source trap), env vars, debugging, the agent surface, conventions and
+  a "gotchas that will cost you an afternoon" list.
+- `how-it-works.md` added: the job pipeline stage by stage with its progress map, the DSP kernels
+  and both profiles with real parameters, why the resampler is asymmetric, the two pipelines and the
+  click-free A/B design, the ffmpeg traps (module worker + ESM core, the `text/html` probe, container
+  and encoder selection), OPFS/COI/logger, and the agent surface.
+- Fixed a stale claim found while writing it: `models.ts` described the `webaudio` engine as built on
+  `OfflineAudioContext` with `BiquadFilter`/`DynamicsCompressor` nodes, which has not been true since
+  the kernels moved into `lib/dsp.ts`.
+
 ### Still not verified
 
 - Cloud pickers (no OAuth keys in this environment).

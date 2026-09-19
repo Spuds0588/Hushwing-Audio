@@ -1,140 +1,234 @@
 # Hushwing Audio
 
-A private, zero-cost alternative to cloud-based voice enhancers that runs entirely inside the
-user's browser via WebAssembly (WASM). Drop in audio or video, pick an engine, and export the
-cleaned track — nothing is uploaded, and there is no account, quota or telemetry.
+### ▶ **[Try it now — spuds0588.github.io/Hushwing-Audio](https://spuds0588.github.io/Hushwing-Audio/)**
 
-Product requirements live in [`PRD-Hushwing.md`](./PRD-Hushwing.md), the agent/contributor
-contract in [`AGENTS.md`](./AGENTS.md), the build log in [`history.md`](./history.md) and the
-live task list in [`todo.md`](./todo.md).
+No install, no account, no upload. Open the link, drop in a file, export the cleaned track.
 
-## What v1 ships
+A private, zero-cost alternative to cloud-based voice enhancers. Everything runs inside the
+browser via `ffmpeg.wasm` and the Web Audio API: media never leaves the machine, there is no
+backend, no quota and no telemetry.
 
-| Area | Status |
+| | |
 | --- | --- |
-| Landing page + studio UI (Tailwind v4, Framer Motion) | ✅ |
+| **Live tool** | <https://spuds0588.github.io/Hushwing-Audio/> |
+| **How it works** | [`how-it-works.md`](./how-it-works.md) — the pipeline, the DSP, and why it is built this way |
+| **Product requirements** | [`PRD-Hushwing.md`](./PRD-Hushwing.md) |
+| **Agent & contributor contract** | [`AGENTS.md`](./AGENTS.md) — read this before changing code |
+| **Build log / task list** | [`history.md`](./history.md) · [`todo.md`](./todo.md) |
+
+## Status
+
+| Area | State |
+| --- | --- |
+| Landing page + studio (Tailwind v4, Framer Motion) | ✅ |
 | Drag & drop, queue with per-job progress, stage labels, retry | ✅ |
-| Video → 16 kHz mono WAV extraction, enhance, mux back to MP4 | ✅ `ffmpeg.wasm` |
-| Native Web Audio engine (high-pass → compressor → soft limiter) | ✅ |
-| Adaptive noise-floor gate engine (id `rnnoise`) | ✅ |
-| Batch render in a Web Worker (Pipeline A) | ✅ |
-| Real-time A/B preview via AudioWorklet (Pipeline B) | ✅ |
+| Video → 16 kHz mono WAV, enhance, mux back into the source container | ✅ `ffmpeg.wasm` |
+| `webaudio` engine — high-pass → soft-knee compressor → soft limiter | ✅ |
+| `rnnoise` engine — adaptive noise-floor gate (id kept, weights are a follow-up) | ✅ |
+| Pipeline A: batch render in a Web Worker | ✅ |
+| Pipeline B: real-time A/B preview through an `AudioWorklet` | ✅ |
 | OPFS staging + streamed results, `.zip` batch export | ✅ |
 | `window.HushwingAPI`, semantic DOM hooks, URL params, `mcp.json` | ✅ |
-| Google Drive / OneDrive import | ⚙️ Needs OAuth keys (see below) |
-| DeepFilterNet 3 | ⏳ Planned — the option is disabled, not fake |
+| Google Drive / OneDrive import | ⚙️ needs OAuth keys — see below |
+| DeepFilterNet 3 | ⏳ planned, the option is disabled rather than faked |
 
-## Requirements
+Verified end to end in Chromium against both the dev preview and the live Pages deployment — see
+[Testing](#testing).
 
-- [Bun](https://bun.sh) (or any package manager that can run the Vite scripts)
-- A Chromium/Firefox/Safari build with `AudioWorklet`, Web Workers and OPFS
+---
+
+# For developers
+
+## Quick start
 
 ```bash
 bun install
-bun run dev        # http://localhost:5173
-bun run typecheck  # tsc -b --noEmit
-bun run build      # tsc -b && vite build → dist/
+bun run dev          # http://localhost:5173  ·  append #studio for the dashboard
 ```
 
-### End-to-end verification
+The first load pulls a ~32 MB `ffmpeg.wasm` core. It is only fetched when there is actually work
+to do (see `preloadFFmpeg`), and the browser caches it afterwards.
+
+## Scripts
+
+| Command | What it does |
+| --- | --- |
+| `bun run dev` | Vite dev server. `PORT` overrides the port; binds `0.0.0.0`. HMR is deliberately **off** |
+| `bun run build` | `tsc -b && vite build` → `dist/`. Must exit; it never starts a server |
+| `bun run build:pages` | `vite build` alone — what CI runs, so type errors fail the build step, not the deploy |
+| `bun run typecheck` | `tsc -b --noEmit`. Must be clean |
+| `bun run lint` | `oxlint` |
+| `bun run preview` | Serve the built `dist/` locally |
+| `bun run test:e2e` | The browser suite (below) |
+
+## Project layout
+
+```
+index.html ─ coi-serviceworker → cross-origin isolation
+  └── src/App.tsx ──────── landing page + studio shell, queue wiring, API install
+        ├── store/app.ts ......... zustand queue — the single source of truth
+        ├── lib/dsp.ts ........... DSP kernels: high-pass, gate, compressor, limiter, resample
+        ├── lib/engine.ts ........ HushwingEngine contract; worker engine + main-thread fallback
+        ├── lib/ffmpeg.ts ........ core loading/probing, 16 kHz extraction, video mux
+        ├── lib/filekit.ts ....... WAV parse/encode, format tables, blob URLs
+        ├── lib/opfs.ts .......... streaming OPFS writer/reader
+        ├── lib/pipeline.ts ...... stage → extract → enhance → resample → stream → mux
+        ├── lib/preview.ts ....... Pipeline B session (peaks, worklet graph, A/B, meter)
+        ├── lib/hushwing-api.ts .. window.HushwingAPI
+        ├── lib/{models,batch,cloud-import,logger}.ts
+        ├── components/ .......... Landing, Header, UploadZone, JobQueue, DebugLog, AbPreview,
+        │                          CloudImport, ui primitives
+        └── workers/enhance-worker.ts     Pipeline A
+public/
+  ├── worklets/hushwing-preview.js   Pipeline B processor — plain JS mirror of lib/dsp.ts
+  ├── coi-serviceworker.js           COOP/COEP injection for SharedArrayBuffer
+  └── mcp.json                       WebMCP discovery document, served at /mcp.json
+e2e/hushwing.e2e.mjs                 the browser suite
+```
+
+`src/lib/dsp.ts` is the single source of truth for the DSP. `public/worklets/hushwing-preview.js`
+is a hand-maintained plain-JS copy, because an `AudioWorklet` module is loaded outside the bundler
+and cannot import TypeScript. **Change both together** — that is item 3 of `AGENTS.md` §3.
+
+## Testing
 
 ```bash
-bunx playwright install chromium                 # once
-PREVIEW_URL=https://<preview-host> bun run test:e2e
+bunx playwright install chromium                          # once
+PREVIEW_URL=https://<host> bun run test:e2e               # headless
+HEADED=1 E2E_SCREENSHOT=/tmp/studio.png \
+  xvfb-run -a --server-args="-screen 0 1600x1000x24" \
+  PREVIEW_URL=https://<host> bun run test:e2e             # real windowed Chromium
 ```
 
-`e2e/hushwing.e2e.mjs` drives real headless Chromium against the running preview. It queues a
-generated WAV, a real H.264/AAC MP4 and a VP8/Opus WebM recorded in-page, then checks the delivered
-bytes of every result (RIFF/fmt header, Matroska magic, MP4 `ftyp` brand), the `.zip` export, the
-AudioWorklet A/B preview (level meter, playhead, switching, teardown), the URL parameters and
-`window.HushwingAPI`. It prints the app's own diagnostics whenever a job fails. A green run is
-required before shipping a change to the pipeline, an engine or the preview.
+`e2e/hushwing.e2e.mjs` drives real Chromium and asserts on the *delivered bytes*, not on the UI:
+
+1. queues a generated 16 kHz WAV, a real H.264/AAC MP4 and a VP8/Opus WebM recorded in-page;
+2. checks every result's container and header (RIFF/fmt, Matroska magic `1a45dfa3`, MP4 `ftyp`);
+3. exports the `.zip` and verifies the `PK` header;
+4. runs the A/B preview — worklet ready, level meter moving, playhead advancing, A↔B switching,
+   graph teardown;
+5. exercises `?model=`, `?debug=`, the semantic DOM hooks and `window.HushwingAPI`.
+
+When a job fails it dumps the app's own diagnostic log, which is the fastest route to the cause.
+Point `PREVIEW_URL` at the dev preview or at the live site — both are supported (the dev-only
+diagnostics import degrades to a note in production). A green run is required before shipping a
+change to the pipeline, an engine or the preview.
 
 ## Deploying to GitHub Pages
 
-The build is static and uses `base: './'`, so one build works at a domain root *and* at
+The build is static and uses `base: './'`, so one artifact works at a domain root *and* at
 `https://<user>.github.io/<repo>/`.
 
-```bash
-bunx vite build     # emits dist/ (including dist/ffmpeg-core) — must exit, never start a server
-```
-
-`.github/workflows/deploy.yml` does this on every push to `main` and publishes `dist/` with
-`actions/deploy-pages`. Enable **Settings → Pages → Source: GitHub Actions** once, then push.
-`public/.nojekyll` keeps the `assets/` folder from being filtered by Jekyll.
+`.github/workflows/deploy.yml` runs install → typecheck → `vite build` → `actions/deploy-pages` on
+every push to `main`. **Settings → Pages → Source must be "GitHub Actions"** — if it is left on
+"Deploy from a branch", the legacy Jekyll pipeline republishes the raw repository root on each push
+and silently overrides the deployed artifact (the site then serves `/src/main.tsx` and 404s on
+`/mcp.json`, `/worklets/…` and `/ffmpeg-core/…`). `public/.nojekyll` keeps `assets/` from being
+filtered if that ever happens.
 
 Static hosting cannot send `COOP`/`COEP` headers, so `public/coi-serviceworker.js` injects
 `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: credentialless`
 (PRD §2.1) to make `SharedArrayBuffer` available. It only registers in a top-level window, so it
-stays inert inside embedded previews; append `?coi=off` to disable it entirely.
+stays inert inside an embedded preview; append `?coi=off` to disable it entirely.
 
 ## Environment variables
 
-Set these in **Settings → Environment** (sandbox) and in the hosting panel (production). All are
-optional — without them the app still processes local files.
+All optional — without them the app still processes local files. Set them in
+**Settings → Environment** (sandbox) and in the hosting panel (production); Vite only exposes
+`VITE_`-prefixed keys to the client.
 
 | Variable | Purpose |
 | --- | --- |
-| `VITE_GOOGLE_CLIENT_ID` | OAuth client id enabling the Google Drive picker |
-| `VITE_GOOGLE_API_KEY` | Drive Picker API key (required next to the client id) |
+| `VITE_GOOGLE_CLIENT_ID` | OAuth client id that enables the Google Drive picker |
+| `VITE_GOOGLE_API_KEY` | Drive Picker API key (required alongside the client id) |
 | `VITE_ONEDRIVE_CLIENT_ID` | Azure app registration (redirect URI: this site's origin) |
-| `VITE_FFMPEG_CORE_BASE` | Force a specific `ffmpeg-core.js` / `.wasm` location (overrides the automatic probe) |
+| `VITE_FFMPEG_CORE_BASE` | Force a specific `ffmpeg-core.js` / `.wasm` location, overriding the probe |
 
-The ffmpeg core is **self-hosted in production**: the build copies `node_modules/@ffmpeg/core`
-(the ESM build — `@ffmpeg/ffmpeg` loads the core from a module worker, and the UMD bundle has no
-default export) into `dist/ffmpeg-core/`, and `src/lib/ffmpeg.ts` probes for those files before
-falling back to a CDN. A deployed build therefore fetches nothing but its own origin — no CDN, no
-third-party request, and `CORE_VERSION` in `src/lib/ffmpeg.ts` only pins the fallback.
+### Where the ffmpeg core comes from
 
-`public/ffmpeg-core/` is an optional local copy of the same two files (convenient offline, and what
-the dev preview uses when present). It is **gitignored on purpose** — committing 32 MB of WASM to
-git is not worth it, and nothing depends on it being there.
+`vite.config.ts` copies `node_modules/@ffmpeg/core` into `dist/ffmpeg-core/` at build time, and
+`src/lib/ffmpeg.ts` probes for those files before falling back to a CDN. It must be the **ESM**
+build: `@ffmpeg/ffmpeg` always spawns a *module* worker, where `importScripts()` does not exist and
+the loader falls back to `import(coreURL)` — importing the UMD bundle yields no default export and
+the load fails. A deployed build therefore fetches nothing but its own origin (verified: zero
+third-party requests at runtime).
 
-## Architecture
+`public/ffmpeg-core/` is an optional local copy of the same two files, used by the dev preview when
+present. It is **gitignored on purpose** — 32 MB of WASM does not belong in git, and nothing
+depends on it being there.
 
-```
-index.html ─ coi-serviceworker → cross-origin isolation
-  └── src/App.tsx ─ landing page + studio shell
-        ├── store/app.ts ......... zustand queue (single source of truth)
-        ├── lib/opfs.ts .......... streaming OPFS writer/reader
-        ├── lib/ffmpeg.ts ........ extract 16 kHz mono WAV, mux video (worker inside ffmpeg.wasm)
-        ├── lib/filekit.ts ....... WAV parse/encode, format tables, blob URLs
-        ├── lib/dsp.ts ........... pure-JS kernels: high-pass, gate, compressor, limiter, resample
-        ├── workers/enhance-worker.ts  Pipeline A — batch render off the main thread
-        ├── public/worklets/hushwing-preview.js  Pipeline B — real-time A/B monitoring
-        └── lib/pipeline.ts ...... stage → extract → enhance → resample → stream to OPFS → mux
-```
+## Debugging
 
-Every engine implements the same contract (`{ process(samples, sampleRate) }`), which is what
-lets the identical DSP run in a worker and behind an `AudioWorkletNode`.
+- **`?debug=true`** opens the on-screen diagnostics panel: a bounded 250-entry rolling log, the
+  capability badges (OPFS, AudioWorklet, SharedArrayBuffer, cross-origin isolation, Web Workers)
+  and a log download. It has a stable hook: `[data-mcp-target="diagnostics"]`.
+- **`window.HushwingAPI.downloadDebugLog()`** exports the same log as a `.txt`.
+- From the console the queue is fully drivable: `HushwingAPI.getJobs()`, `queueMedia()`,
+  `processMedia()`.
 
-### Known v1 limitations
+### Gotchas that will cost you an afternoon
 
-- `@ffmpeg/ffmpeg` 0.12 cannot mount OPFS, so the input passes through the WASM filesystem
-  (RAM) during the ffmpeg step. Everything before and after streams through OPFS. The 32 MB core
-  makes the deployed `dist/` roughly 33 MB; set `build.assetsInlineLimit` aside and expect the
-  first load to be dominated by that download (it is cache-busted by the host, so reloads are
-  cheap).
-- The `rnnoise` model id is kept for API compatibility, but this build ships an adaptive
-  gate/expander DSP profile, not the RNNoise WASM weights. It is labelled honestly in the UI.
-- Cloud pickers need the OAuth keys above; the import-to-local constraint from the PRD is
-  enforced by design (results are never written back to the cloud).
+- **`innerText` reflects CSS `text-transform`.** Headings are styled `uppercase`, so `innerText`
+  reports `DIAGNOSTICS` while `textContent` reports `Diagnostics`. Assert on `textContent` or on a
+  `data-*` hook.
+- **A dev-server module URL can be served stale.** If `curl` shows an edit missing, cache-bust the
+  URL (`?t=1`) before believing it — and never conclude the app is broken from a plain-URL fetch.
+- **Never collect a whole rendered file into one blob** unless it is already a single buffer.
+  Inputs stage in OPFS and results stream back through `openOPFSWriter`.
+- **Queue concurrency is 1** by design (`runQueue`), so a phone tab never holds several
+  multi-hundred-megabyte buffers.
+- **Release WASM resources in `finally`**: delete ffmpeg virtual files after every run and reject
+  pending worker calls on dispose.
+- **The worker reports failures as plain strings**, not `Error`s. `describeError()` in
+  `lib/ffmpeg.ts` exists because a naive `instanceof Error` check threw away the only useful detail.
+- **Cloud pickers must never write back.** Import goes cloud → OPFS only; results stay local.
 
 ## Headless / agent surface
 
 ```js
-await window.HushwingAPI.getModels()            // ['webaudio', 'rnnoise']
-await window.HushwingAPI.processMedia({ file, model: 'webaudio', outputFormat: 'wav' })
-window.HushwingAPI.getJobs()                    // id, status, progress, stage, resultUrl, error
+await window.HushwingAPI.getModels()            // ['webaudio', 'rnnoise'] — only what really runs
+await window.HushwingAPI.processMedia({ file, model: 'webaudio', outputFormat: 'wav' })  // → Blob
+await window.HushwingAPI.queueMedia({ file })   // → job id
+window.HushwingAPI.getJobs()                    // id, status, name, progress, stage, resultUrl, error
 window.HushwingAPI.downloadDebugLog()
 ```
 
-Semantic hooks: `input[data-mcp-action="upload"]`,
-`select[data-mcp-target="model-selector"]`, `button[data-mcp-action="process-queue"]`,
-`a[data-mcp-action="download-result"][data-job-id="<uuid>"]`,
-`[data-mcp-target="diagnostics"]`, and job rows carrying `data-job-id` / `data-status`.
-URL parameters: `?model=`, `?autostart=true`, `?debug=true`, `?coi=off`. Discovery document:
+| Selector | Purpose |
+| --- | --- |
+| `input[data-mcp-action="upload"]` | Hidden file input — agents set `.files` and dispatch `change` |
+| `select[data-mcp-target="model-selector"]` | `webaudio` \| `rnnoise` |
+| `select[data-mcp-target="output-format"]` | `wav` \| `video` |
+| `button[data-mcp-action="process-queue"]` | Process every queued job |
+| `a[data-mcp-action="download-result"][data-job-id="<uuid>"]` | Result download link |
+| `[data-mcp-target="diagnostics"]` | Diagnostics panel (present only while the log is open) |
+
+Job rows poll cleanly: `<li data-job-id="<uuid>" data-status="queued|preparing|processing|completed|error" data-job-name="interview.wav">`.
+
+URL parameters: `?model=rnnoise`, `?autostart=true`, `?debug=true`, `?coi=off`; the hash `#studio`
+opens the dashboard directly. Full contract in [`AGENTS.md`](./AGENTS.md) §4–§7; discovery document
 [`public/mcp.json`](./public/mcp.json), served at `/mcp.json`.
+
+## Conventions
+
+Vite + React 19 + TypeScript built with Bun, Tailwind CSS v4 with theme tokens declared in
+`src/index.css` (`--color-surface-*`, `--color-ink-*`, `--color-accent`, `--color-border` — use the
+tokens, never hardcoded hex). No component library: `src/components/ui.tsx` holds the primitives.
+State lives in one zustand store and the queue is the source of truth.
+
+**Everything is client-side. If a change would send user media anywhere, it is wrong.** There is no
+server state, so do not add a data-fetching layer.
+
+## Known limitations
+
+- `@ffmpeg/ffmpeg` 0.12 cannot mount OPFS, so the input passes through the WASM filesystem (RAM)
+  during the ffmpeg step. Everything before and after it streams through OPFS. Expect the first
+  load to be dominated by the 32 MB core download.
+- The `rnnoise` id is kept for API compatibility, but this build ships an adaptive gate/expander
+  DSP profile, not the RNNoise WASM weights. The UI says so.
+- Cloud pickers need the OAuth keys above; the import-to-local constraint from the PRD is enforced
+  by design.
+- The A/B preview has not been verified on a physical iOS device, where Safari interrupts
+  `AudioWorklet` differently.
 
 ## Licence
 

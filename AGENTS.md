@@ -7,6 +7,7 @@ This file is the contract for two audiences:
 2. **Contributors** (human or AI) editing this repository.
 
 See [`PRD-Hushwing.md`](./PRD-Hushwing.md) for the product requirements,
+[`how-it-works.md`](./how-it-works.md) for a guided tour of the internals,
 [`history.md`](./history.md) for the build log and [`todo.md`](./todo.md) for what is left.
 
 ---
@@ -20,7 +21,10 @@ for both the Freebuff hosting panel and GitHub Pages.
 /
 ├── index.html              app shell (COI service worker loader, meta)
 ├── vite.config.ts          base './', server.hmr false
-├── package.json            bun scripts: dev / build / typecheck / lint / preview
+├── package.json            bun scripts: dev / build / typecheck / lint / preview / test:e2e
+├── README.md               pitch, quick start, deploy, gotchas
+├── how-it-works.md         guided tour of the pipeline, DSP and both preview paths
+├── e2e/hushwing.e2e.mjs    browser suite (see §8)
 ├── .github/workflows/      deploy.yml → GitHub Pages
 ├── public/
 │   ├── coi-serviceworker.js     COOP/COEP injection for SharedArrayBuffer

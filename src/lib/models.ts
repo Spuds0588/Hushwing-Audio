@@ -21,7 +21,8 @@ export const MODEL_SPECS: ModelSpec[] = [
       'High-pass filter, downward expander and dynamic compressor. Instant, zero download, good for steady room tone and level matching.',
     tags: ['instant', 'no download', 'offline'],
     ready: true,
-    implementation: 'Built on OfflineAudioContext with BiquadFilter + DynamicsCompressor nodes.',
+    implementation:
+      'Pure-JS chain: RBJ high-pass biquad → soft-knee compressor → soft limiter, so it renders in a worker without an AudioContext.',
   },
   {
     id: 'rnnoise',
