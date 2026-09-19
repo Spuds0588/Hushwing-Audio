@@ -10,7 +10,8 @@
     "typecheck": "tsc -b --noEmit",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test:e2e": "node e2e/hushwing.e2e.mjs"
+    "test:e2e": "node e2e/hushwing.e2e.mjs",
+    "test:bulk": "node e2e/hushwing.bulk.mjs"
   },
   "dependencies": {
     "@ffmpeg/core": "0.12.6",

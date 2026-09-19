@@ -100,7 +100,11 @@ export async function runJob(jobId: string): Promise<Job> {
     let finalExtension = '.wav'
     let warning: string | undefined
 
-    if (outputFormat === 'video') {
+    // Only a video source can be muxed. Asking ffmpeg to put a WAV into a video
+    // container fails every time, so in a mixed batch a global `video` format used
+    // to buy one guaranteed-to-fail ffmpeg run per audio file — the opposite of
+    // what a bulk run needs. Audio inputs simply deliver the enhanced WAV.
+    if (outputFormat === 'video' && sourceKind === 'video') {
       report({ progress: 80, stage: 'Muxing video' })
       const wavBlob = await readDataFromOPFS(wavPath, { asBlob: true })
       if (!(wavBlob instanceof Blob)) throw new Error('The enhanced WAV could not be read back')
@@ -123,6 +127,9 @@ export async function runJob(jobId: string): Promise<Job> {
         finalPath = wavPath
         finalExtension = '.wav'
       }
+    } else if (outputFormat === 'video') {
+      warning = 'No video track in this source — exported the enhanced audio as WAV.'
+      logger.info(`job ${jobId}: ${warning}`)
     }
 
     const outputName = suggestedOutputFilename(job.sourceName, finalExtension)
@@ -199,24 +206,33 @@ export async function runQueue(): Promise<QueueResult> {
     return { completed: 0, failed: 0 }
   }
 
-  const batch = useAppStore
+  const first = useAppStore
     .getState()
     .jobs.filter((job) => isPending(job) && job.status !== 'preparing')
     .map((job) => job.id)
 
-  if (batch.length === 0) return { completed: 0, failed: 0 }
+  if (first.length === 0) return { completed: 0, failed: 0 }
 
   store.setProcessing(true)
-  logger.info(`Queue started with ${batch.length} job(s)`)
+  logger.info(`Queue started with ${first.length} job(s)`)
 
   let completed = 0
   let failed = 0
 
   try {
-    for (const jobId of batch) {
+    // Re-read the queue after every job instead of iterating a snapshot taken up
+    // front. Someone dropping a folder and then dropping three more files must not
+    // leave those three sitting at "queued" forever: the autostart path already
+    // returned (processing is true), so nothing else would ever pick them up.
+    for (;;) {
+      const next = useAppStore
+        .getState()
+        .jobs.find((job) => isPending(job) && job.status !== 'preparing')
+      if (!next) break
+
       await waitUntilVisible()
       try {
-        await runJob(jobId)
+        await runJob(next.id)
         completed += 1
       } catch {
         failed += 1

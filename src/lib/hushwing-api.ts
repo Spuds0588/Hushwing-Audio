@@ -27,6 +27,8 @@ export interface HushwingAPI {
     stage?: string
     resultUrl?: string
     error?: string
+    /** Non-fatal note, e.g. a video-format job whose source had no video track. */
+    warning?: string
   }[]
   /** Download the rolling diagnostic log as a .txt file. */
   downloadDebugLog(): void
@@ -72,6 +74,7 @@ const api: HushwingAPI = {
       stage: job.stage,
       resultUrl: job.resultUrl,
       error: job.error,
+      warning: job.warning,
     }))
   },
 
