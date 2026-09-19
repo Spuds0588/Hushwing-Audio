@@ -60,9 +60,12 @@ processes local audio and video end to end, and the static build is GitHub Pages
 - [x] Fixed: files added while a batch drained were stranded at `queued` forever.
 - [x] Fixed: a global `video` output format made every audio file run a mux that cannot succeed —
       ~40 ffmpeg invocations instead of ~20 for a 21-file drop, which crashed the renderer.
-- [ ] **Very large batches are still untested**: 24 small jobs were the ceiling here. Worth
-      checking 100+ files, and a batch of long videos against the ~1 GB OPFS quota (results stay in
-      OPFS until downloaded or cleared, so result size — not file count — is the real limit).
+- [x] Larger batch verified: `BULK_COUNT=50` → 53/53 jobs (50 dropped + 3 mid-run), heap peak
+      47 MB with +0.6 MB growth across the batch, 9.4 MB of a ~1 GB quota.
+- [ ] **Still untested: a batch of large media.** Everything above used 1–2 s clips. The real
+      constraint is result size against the ~1 GB OPFS quota (results stay until downloaded or
+      cleared), so a folder of long videos — not 500 small files — is the case that needs a
+      machine with more memory and disk than this sandbox.
 
 ## 2. Open — needs a key, a click, or a browser check
 

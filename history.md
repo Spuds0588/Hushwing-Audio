@@ -322,7 +322,11 @@ batch from OPFS, and heap growth stays bounded (it prints the peak, so a leak is
   concurrency 1, 0 progress regressions, `uploads/` empty, `outputs/` exactly 24, zip 24 entries,
   9.5 MB of a ~1 GB OPFS quota, heap peak 95 MB with **+0.4 MB** growth across the batch;
 - main suite **21/21** as a regression check after the pipeline change;
-- no console or page errors in either run.
+- repeated at `BULK_COUNT=50 BULK_VIDEO=0`: **16/16 checks, 53/53 jobs completed** (50 in the drop,
+  3 mid-run arrivals), peak concurrency 1, `uploads/` empty, `outputs/` exactly 53, zip 53 entries,
+  9.4 MB stored, heap peak 47 MB and **+0.6 MB** growth (`47.4 MB → 17.5 MB` on a later sample, so
+  collection is keeping up rather than merely slow to leak);
+- no console or page errors in any run.
 
 ### Process notes / mistakes to avoid
 
