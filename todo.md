@@ -1,8 +1,9 @@
 # Hushwing Audio — TODO / Work Log
 
-Last updated: 2026-09-19 (session 2)
-Status: **v1 is complete, compiling and running.** Landing page + studio render, the queue
-processes local audio and video end to end, and the static build is GitHub Pages ready.
+Last updated: 2026-09-19 (session 4)
+Status: **v1 is complete, live, and studio-only.** The studio is the whole product (drop files,
+pick an engine, follow the queue), the queue processes local audio and video end to end, and the
+static build is deployed to GitHub Pages.
 
 ---
 
@@ -25,8 +26,9 @@ processes local audio and video end to end, and the static build is GitHub Pages
 
 ## 1. Done in v1
 
-- [x] Landing page (hero, features, pipeline steps, engine cards, privacy table, CTAs) and the
-      studio dashboard, themed with the mint-on-charcoal `@theme` tokens.
+- [x] One page, and it is the studio, themed with the mint-on-charcoal `@theme` tokens: dropzone
+      → engine picker → batch progress → job list. The landing page, its nav and the dashboard split
+      were removed in session 4 so there is nothing to get past.
 - [x] Drag & drop queue with per-job progress, stage labels, retry, remove, clear-finished.
 - [x] `ffmpeg.wasm` (single-threaded core, self-hosted in production with a CDN fallback and a
       `VITE_FFMPEG_CORE_BASE` override) extraction to 16 kHz mono WAV and video remux with
@@ -41,8 +43,11 @@ processes local audio and video end to end, and the static build is GitHub Pages
 - [x] JSZip `.zip` export of every finished result.
 - [x] `window.HushwingAPI`, semantic `data-mcp-*` hooks, `?model=` / `?autostart=` / `?debug=`,
       `#studio` deep link, `public/mcp.json`.
-- [x] Google Drive + OneDrive import paths implemented behind `VITE_GOOGLE_CLIENT_ID` +
-      `VITE_GOOGLE_API_KEY` and `VITE_ONEDRIVE_CLIENT_ID`; generic CORS URL import always works.
+- [x] Output follows the source with no control to get it wrong: a video keeps its picture with
+      the enhanced track muxed back in, audio comes back as a 48 kHz WAV. Drive/OneDrive pickers and
+      import-from-URL were implemented and then **removed in session 4** — they added keys, OAuth
+      setup and a first-run decision to a loop that only needed drag-in, so the app now talks to
+      nothing at all.
 - [x] `coi-serviceworker` vendored into `public/` with a credentialless COEP config, guarded to
       top-level windows and disableable with `?coi=off`.
 - [x] GitHub Pages: `base: './'`, relative asset URLs, `public/.nojekyll`,
@@ -51,6 +56,20 @@ processes local audio and video end to end, and the static build is GitHub Pages
       video processing, the A/B preview, the zip export and the agent surface. It found and
       fixed three real bugs: a UMD/ESM ffmpeg-core mismatch that blocked every job, a mux that
       forced VP8/VP9 into MP4, and job errors that carried no stack.
+
+## 1a. Studio-first restructure (session 4)
+
+- [x] The landing page, the landing↔studio navigation and the dashboard split are gone: the studio
+      is the page. `Landing.tsx` deleted; `Header` is brand + status + log toggle.
+- [x] Output selection removed. The format is derived at enqueue from the source kind, so a video
+      cannot come back as audio-only and vice versa; `processMedia()`/`queueMedia()` lost their
+      `outputFormat` option and `mcp.json` documents the derived behaviour.
+- [x] Cloud/URL import removed (`CloudImport.tsx`, `lib/cloud-import.ts`, the OAuth env vars).
+- [x] Chrome reduced to a batch bar: "n of m files", overall progress, active stage. The start
+      control lives with the dropzone and engine picker, so it exists before anything is queued.
+- [x] Guarded by tests: the e2e suite fails if an output-format, URL-import or cloud control ever
+      reappears, and checks the page renders styled with a usable drop target and no horizontal
+      overflow (a blank or unstyled page fails the run).
 
 ## 1b. Bulk / queue workload — checked in session 3
 
@@ -76,18 +95,14 @@ processes local audio and video end to end, and the static build is GitHub Pages
       workflow`. Note that `gh workflow run` is *also* 403 for this credential, so a deploy is
       triggered by pushing to `main` rather than by dispatching the workflow.
 
-- [ ] **Google Drive / OneDrive**: the code paths are complete but unverified because no OAuth
-      keys exist. Set `VITE_GOOGLE_CLIENT_ID` + `VITE_GOOGLE_API_KEY` (Drive Picker API enabled)
-      and `VITE_ONEDRIVE_CLIENT_ID` (Azure app with this origin as a redirect URI), then run one
-      import of each.
 - [ ] **A/B preview on a real device**: headless Chromium is green (worklet ready, meter
       moving, playhead advancing, click-free A/B switch), but iOS Safari's `AudioWorklet`
       behaves differently under interruption and still needs a physical device.
 - [ ] **Large-file run**: process a >1 GB video and watch memory. The ffmpeg step is the known
       high-water mark (see limitations).
-- [ ] **Cross-origin isolation check** on a real Pages deployment: confirm
-      `window.crossOriginIsolated === true` after the service worker installs, and that the
-      Google/OneDrive iframes still load under `COEP: credentialless`.
+- [x] **Cross-origin isolation on the real Pages deployment**: `window.crossOriginIsolated`
+      reaches `true` once the service worker takes control (verified repeatedly; one run reported
+      `false` before the worker had reloaded the page, so give it a moment before concluding).
 
 ## 3. v2 backlog
 

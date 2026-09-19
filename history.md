@@ -337,9 +337,55 @@ batch from OPFS, and heap growth stays bounded (it prints the peak, so a leak is
 - The queue is serial by design: wall-clock time is the sum of every job, and the browser's ~1 GB
   OPFS quota bounds a batch via result size, not file count.
 
+---
+
+## Session 4 — 2026-09-19
+
+### Goal
+
+The studio is the product. Make it the main (and only) experience and strip everything that is not
+dragging files in, choosing an engine, and watching the queue.
+
+### What changed
+
+| Removed | Why |
+| --- | --- |
+| The landing page and the landing↔studio navigation | It was a screen to get past before the tool. `Landing.tsx` is deleted; `Header` is now brand + status + log toggle, and `App.tsx` renders one page |
+| The output-format selector | A choice the user could only get wrong. The format is now derived at enqueue from the source kind — video keeps its picture with the enhanced track muxed back in, audio comes back as 48 kHz WAV |
+| Cloud and URL import (`CloudImport.tsx`, `lib/cloud-import.ts`, three OAuth env vars) | Keys, OAuth setup and a first-run decision for a loop that only needed drag-in. The app now talks to nothing |
+| The dashboard furniture (queue-status card, storage card, "Add media" wrapper, Home/Open studio buttons, Reset queue) | Nothing to configure, so nothing to lay out |
+
+Added: one batch bar that only appears once there is work — "n of m files · size ready", an overall
+progress bar and the active job's stage. The start control stayed with the dropzone and engine
+picker, which is where the decision is made and where it is reachable *before* anything is queued.
+
+`processMedia()`/`queueMedia()` dropped their `outputFormat` option, `getJobs()` gained `warning`,
+and `mcp.json` now documents the derived output and the removed hooks.
+
+### A regression the tests caught
+
+Moving the process button into the conditional batch bar removed
+`button[data-mcp-action="process-queue"]` from the page until files were queued — breaking the
+documented agent hook and leaving a first-time visitor with nothing to press. The e2e run failed on
+it (`{"queue":false}`), and the button moved back next to the dropzone. The suite now also asserts
+that no output-format, URL-import or cloud control exists, and that the page renders styled with a
+usable drop target and no horizontal overflow, so a blank page fails instead of passing quietly.
+
+### Verification
+
+`bun tsc -b --noEmit` clean; `bunx vite build` shrinks the bundle to 497 kB JS / 26.5 kB CSS (from
+515 / 33) now that the landing page is gone. Against production:
+
+- main suite **22/22** headed, with `crossOriginIsolated === true`, dropzone 976 × 344 px, 36 px
+  heading, no horizontal overflow, no console errors;
+- the same three jobs: WAV `384 044 B · 48 000 Hz · mono · 16-bit`, WebM → WebM, MP4 → MP4, zip
+  `6 300 695 B`, worklet preview ready with the meter at 49%;
+- bulk suite **16/16**, 24/24 jobs, "23 wav + 1 video" — i.e. in one mixed drop every file came back
+  as its own kind without any format being chosen.
+
 ### Still not verified
 
-- Cloud pickers (no OAuth keys in this environment).
 - A/B preview on a physical iOS device.
+- A batch of large media (the ~1 GB OPFS quota is the real bound, not file count).
 - A genuinely huge batch (500+ files, or multi-GB video) — the suite's ceiling here was 24 small
   jobs, which is bounded by this sandbox rather than by the app.
