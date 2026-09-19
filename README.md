@@ -59,7 +59,8 @@ to do (see `preloadFFmpeg`), and the browser caches it afterwards.
 | `bun run typecheck` | `tsc -b --noEmit`. Must be clean |
 | `bun run lint` | `oxlint` |
 | `bun run preview` | Serve the built `dist/` locally |
-| `bun run test:e2e` | The browser suite (below) |
+| `bun run test:e2e` | The browser suite — one audio job, two video jobs, the preview (below) |
+| `bun run test:bulk` | The bulk/queue suite — 20+ files in one drop, plus mid-run arrivals |
 
 ## Project layout
 
@@ -113,6 +114,34 @@ When a job fails it dumps the app's own diagnostic log, which is the fastest rou
 Point `PREVIEW_URL` at the dev preview or at the live site — both are supported (the dev-only
 diagnostics import degrades to a note in production). A green run is required before shipping a
 change to the pipeline, an engine or the preview.
+
+### Bulk and queued workloads
+
+```bash
+PREVIEW_URL=https://<host> bun run test:bulk                   # 20 audio files + 1 video + 3 late arrivals
+BULK_COUNT=50 BULK_VIDEO=0 PREVIEW_URL=https://<host> bun run test:bulk   # bigger, audio-only
+```
+
+`e2e/hushwing.bulk.mjs` covers the part that has to hold up when someone drops a folder on it:
+
+1. one multi-file drop through `?autostart=true` queues and drains every file without a click;
+2. **concurrency never exceeds 1** and per-job progress never goes backwards;
+3. files dropped *while the batch is draining* are picked up, not stranded at `queued`;
+4. OPFS hygiene: `uploads/` is empty afterwards (each staging copy is deleted in the job's
+   `finally`) and `outputs/` holds exactly one result per job;
+5. a mixed drop under one global output format degrades honestly — video inputs still produce
+   video, audio inputs return the enhanced WAV *and say why* in `job.warning`;
+6. the `.zip` contains one entry per result, and "Clear finished" purges the whole batch;
+7. heap growth across the batch stays bounded (it prints the peak, so a leak is visible).
+
+Behaviour worth knowing before you promise someone "drop 500 files and walk away":
+
+- The queue is strictly serial, so wall-clock time is the sum of every job. That is deliberate —
+  one tab never holds several hundred megabytes of buffers at once.
+- Results stay in OPFS until you download or clear them, and the browser only grants roughly 1 GB
+  of it, so a very large batch is bounded by result size, not by file count. Small files (24 jobs
+  ≈ 9.5 MB in the run above) are nowhere near that; a folder of long videos is.
+- The queue drains anything still `queued`, so arrivals mid-run are picked up automatically.
 
 ## Deploying to GitHub Pages
 

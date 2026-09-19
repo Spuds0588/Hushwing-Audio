@@ -72,9 +72,21 @@ for both the Freebuff hosting panel and GitHub Pages.
 4. **The logger is synchronous and bounded.** `src/lib/logger.ts` keeps a rolling 250-entry
    buffer, exposes a `useSyncExternalStore` snapshot, and can export a `.txt` diagnostic.
    Never add unbounded arrays.
-5. **Queue concurrency stays at 1.** See `runQueue()` in `src/lib/pipeline.ts`.
-6. **Free what WASM gives you.** Release pointers in `finally` blocks; delete ffmpeg virtual
+5. **Queue concurrency stays at 1, and the queue drains.** `runQueue()` in `src/lib/pipeline.ts`
+   re-reads the store after every job rather than iterating a snapshot, so files added while a
+   batch is draining are picked up instead of sitting at `queued` forever (the autostart path has
+   already returned by then, so nothing else would ever collect them).
+6. **OPFS lifecycle per job.** The staged input in `uploads/` is deleted in the job's `finally`;
+   the finished result in `outputs/` stays until the user removes the job or clears finished ones.
+   Bulk runs are therefore bounded by result size against the browser's ~1 GB quota, not by file
+   count.
+7. **Free what WASM gives you.** Release pointers in `finally` blocks; delete ffmpeg virtual
    files after every run.
+8. **Only mux a video source.** `muxVideo` writes a video container, so `runJob` calls it only for
+   `sourceKind === 'video'`. Muxing an audio file into a video container fails every time, which in
+   a mixed bulk batch meant one guaranteed-to-fail ffmpeg run per audio file — that is what took
+   the renderer down at ~20 files before it was fixed. Audio inputs in a `video` batch deliver the
+   enhanced WAV and set `job.warning` to say why.
 
 ## 4. `window.HushwingAPI` (headless control)
 
@@ -93,7 +105,7 @@ window.HushwingAPI.downloadDebugLog()
 | `getModels()` | `() => Promise<ModelId[]>` | Only models that are actually implemented |
 | `processMedia(opts)` | `({ file, model?, outputFormat? }) => Promise<Blob>` | Resolves with the enhanced media; rejects on failure |
 | `queueMedia(opts)` | `({ file, model?, outputFormat? }) => Promise<string>` | Returns the job id |
-| `getJobs()` | `() => JobSummary[]` | `id`, `status`, `name`, `progress`, `stage`, `resultUrl`, `error` |
+| `getJobs()` | `() => JobSummary[]` | `id`, `status`, `name`, `progress`, `stage`, `resultUrl`, `error`, `warning` |
 | `downloadDebugLog()` | `() => void` | Downloads `hushwing-debug-<ts>.txt` |
 
 ## 5. Semantic DOM hooks
@@ -156,3 +168,15 @@ header bytes, then exercises the worklet preview, the zip export, the URL parame
 `window.HushwingAPI`. It asserts on the app's own diagnostics when a job fails. Two flakes to know
 about: the preview host may serve a cached module for a plain URL (cache-bust before trusting a
 "missing" hook), and `innerText` reflects CSS `text-transform`, so assert on `textContent`.
+
+Run the queue suite too for anything touching the queue, OPFS or ffmpeg:
+
+```bash
+PREVIEW_URL=https://<preview-host> bun run test:bulk
+```
+
+`e2e/hushwing.bulk.mjs` drops 20+ files in one go (plus a few more mid-run) and checks the invariants
+above: concurrency stays at 1, progress never regresses, `uploads/` ends up empty while `outputs/`
+holds one result per job, mid-run arrivals are not stranded, the zip matches the results, and heap
+growth stays bounded. It also proves a mixed batch under one global output format degrades honestly
+instead of failing.

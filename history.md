@@ -287,7 +287,55 @@ Verified against **https://spuds0588.github.io/Hushwing-Audio/** with the same s
   `OfflineAudioContext` with `BiquadFilter`/`DynamicsCompressor` nodes, which has not been true since
   the kernels moved into `lib/dsp.ts`.
 
+---
+
+## Session 3 — 2026-09-19
+
+### Goal
+
+Check that bulk and queued workloads actually hold up — the first two sessions only ever queued
+three files.
+
+### The bulk suite
+
+`e2e/hushwing.bulk.mjs` (`bun run test:bulk`) drops 20 audio files plus a real MP4 in a single
+`setInputFiles` under `?autostart=true`, drops three more files *while the batch is draining*, and
+then asserts the queue's invariants rather than the UI: concurrency never exceeds 1, per-job
+progress never regresses, `uploads/` ends up empty while `outputs/` holds one result per job,
+mid-run arrivals are not stranded, the `.zip` has one entry per result, "Clear finished" purges the
+batch from OPFS, and heap growth stays bounded (it prints the peak, so a leak is visible).
+
+### Bugs it found and the fixes
+
+| Bug | Cause | Fix |
+| --- | --- | --- |
+| **Files dropped mid-run were stranded** — at `queued` forever, never processed | `runQueue()` iterated a snapshot of the queue taken at the start, and the autostart path had already returned because `processing` was true, so nothing was left to collect the arrivals | `runQueue()` re-reads the store after every job and keeps draining |
+| **The renderer died on a 21-file batch** (`Target crashed`, no console error) | With one global `video` output format, every audio file ran a mux that *cannot* succeed — ffmpeg was told to map a video stream that does not exist — so a 21-file drop meant ~40 ffmpeg invocations instead of ~20. The same batch survives after the fix, and a 6-file batch survived even before it, which points at the doubled WASM work rather than a leak | `runJob` only calls `muxVideo` for `sourceKind === 'video'`; audio inputs in a `video` batch deliver the enhanced WAV and set `job.warning` saying why |
+| Silent output-format mismatch | Nothing told the caller why a `video` request produced a `.wav` | Warning set on the job and surfaced through `HushwingAPI.getJobs()` |
+
+### Verification
+
+`bun tsc -b --noEmit` clean; `bun run lint` has 0 errors (7 pre-existing style warnings). Against
+**https://spuds0588.github.io/Hushwing-Audio/**:
+
+- bulk suite **17/17**, 21-file drop + 3 arrivals = **24/24 jobs completed, 0 stranded**, peak
+  concurrency 1, 0 progress regressions, `uploads/` empty, `outputs/` exactly 24, zip 24 entries,
+  9.5 MB of a ~1 GB OPFS quota, heap peak 95 MB with **+0.4 MB** growth across the batch;
+- main suite **21/21** as a regression check after the pipeline change;
+- no console or page errors in either run.
+
+### Process notes / mistakes to avoid
+
+- `waitForSelector` defaults to `state: 'visible'`, and the upload input is deliberately hidden —
+  wait for `attached` instead.
+- A completed job row no longer renders a progress bar, so scraping `aria-valuenow` from every row
+  made "progress went backwards" fire on completion. Skip rows without a reading.
+- The queue is serial by design: wall-clock time is the sum of every job, and the browser's ~1 GB
+  OPFS quota bounds a batch via result size, not file count.
+
 ### Still not verified
 
 - Cloud pickers (no OAuth keys in this environment).
 - A/B preview on a physical iOS device.
+- A genuinely huge batch (500+ files, or multi-GB video) — the suite's ceiling here was 24 small
+  jobs, which is bounded by this sandbox rather than by the app.

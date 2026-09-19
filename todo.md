@@ -52,6 +52,18 @@ processes local audio and video end to end, and the static build is GitHub Pages
       fixed three real bugs: a UMD/ESM ffmpeg-core mismatch that blocked every job, a mux that
       forced VP8/VP9 into MP4, and job errors that carried no stack.
 
+## 1b. Bulk / queue workload — checked in session 3
+
+- [x] Bulk suite (`bun run test:bulk`, `e2e/hushwing.bulk.mjs`): 20-file drop + 1 video + 3 mid-run
+      arrivals, verifying concurrency stays 1, progress never regresses, OPFS hygiene, no stranding,
+      zip parity and bounded heap. 17/17 against production.
+- [x] Fixed: files added while a batch drained were stranded at `queued` forever.
+- [x] Fixed: a global `video` output format made every audio file run a mux that cannot succeed —
+      ~40 ffmpeg invocations instead of ~20 for a 21-file drop, which crashed the renderer.
+- [ ] **Very large batches are still untested**: 24 small jobs were the ceiling here. Worth
+      checking 100+ files, and a batch of long videos against the ~1 GB OPFS quota (results stay in
+      OPFS until downloaded or cleared, so result size — not file count — is the real limit).
+
 ## 2. Open — needs a key, a click, or a browser check
 
 - [x] **Flip the Pages source to GitHub Actions** (done by hand; the repository-scoped
