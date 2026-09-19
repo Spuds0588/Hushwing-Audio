@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
 import type { Job, ModelId } from '../types/hushwing'
 import { PreviewSession } from '../lib/preview'
-import { MODEL_SPECS } from '../lib/models'
 import { formatDuration } from '../lib/filekit'
 import { Badge, Button, Card, cx } from './ui'
 
@@ -9,19 +8,23 @@ interface AbPreviewProps {
   job: Job
   /** The source media to preview. The caller only mounts this for jobs that have one. */
   source: Blob
-  onClose: () => void
-  onModelChange: (model: ModelId) => void
+  /** The engine to audition. Changing it switches the live wet branch. */
+  model: ModelId
+  title?: string
+  hint?: string
+  /** Omit to render without a close control (step 2 keeps the audition pinned). */
+  onClose?: () => void
 }
 
 /**
  * Pipeline B in the UI: play the source, then switch between the untouched
  * signal (A) and the live-processed signal (B) without stopping playback.
  */
-export function AbPreview({ job, source, onClose, onModelChange }: AbPreviewProps) {
-  // Recreated only when the previewed file changes, so playback survives model
-  // switches (which are pushed into the worklet instead).
+export function AbPreview({ job, source, model, title, hint, onClose }: AbPreviewProps) {
+  // Recreated only when the previewed file changes, so playback survives engine
+  // switches (which are pushed into the running graph instead).
   const session = useMemo(
-    () => new PreviewSession(source, job.model),
+    () => new PreviewSession(source, model),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [job.id, source]
   )
@@ -35,18 +38,21 @@ export function AbPreview({ job, source, onClose, onModelChange }: AbPreviewProp
     }
   }, [session])
 
+  useEffect(() => {
+    void session.setModel(model)
+  }, [session, model])
+
   const position = state.duration > 0 ? state.currentTime / state.duration : 0
 
   return (
-    <Card className="mt-8">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+    <Card className="flex flex-col gap-4" data-mcp-target="ab-preview" data-preview-model={state.model}>
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-sm font-semibold tracking-wide text-[var(--color-ink-1)] uppercase">
-            A/B preview
+            {title ?? 'A/B preview'}
           </h2>
           <p className="mt-1 truncate text-xs text-[var(--color-ink-muted)]" title={job.sourceName}>
-            {job.sourceName} · {formatDuration(state.duration || job.duration || 0)} · checked with
-            the live engine, not the rendered file
+            {hint ?? `${job.sourceName} · ${formatDuration(state.duration || job.duration || 0)}`}
           </p>
         </div>
 
@@ -57,9 +63,11 @@ export function AbPreview({ job, source, onClose, onModelChange }: AbPreviewProp
           >
             {state.bypassed ? 'A · original' : 'B · enhanced'}
           </Badge>
-          <Button variant="ghost" size="sm" onClick={onClose} data-mcp-action="preview-close">
-            Close
-          </Button>
+          {onClose && (
+            <Button variant="ghost" size="sm" onClick={onClose} data-mcp-action="preview-close">
+              Close
+            </Button>
+          )}
         </div>
       </div>
 
@@ -70,7 +78,7 @@ export function AbPreview({ job, source, onClose, onModelChange }: AbPreviewProp
         onSeek={(ratio) => session.seek(ratio)}
       />
 
-      <div className="mt-4 flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <Button
           size="sm"
           data-mcp-action="preview-toggle-play"
@@ -115,26 +123,6 @@ export function AbPreview({ job, source, onClose, onModelChange }: AbPreviewProp
           </button>
         </div>
 
-        <label className="flex items-center gap-2 text-xs text-[var(--color-ink-muted)]">
-          <span>Live model</span>
-          <select
-            data-mcp-target="preview-model-selector"
-            value={job.model}
-            onChange={(event) => {
-              const model = event.target.value as ModelId
-              session.setModel(model)
-              onModelChange(model)
-            }}
-            className="rounded-lg border border-border bg-[var(--color-surface-2)] px-2 py-1 text-xs text-[var(--color-ink-0)] focus:border-accent focus:outline-none"
-          >
-            {MODEL_SPECS.filter((spec) => spec.ready).map((spec) => (
-              <option key={spec.id} value={spec.id}>
-                {spec.label}
-              </option>
-            ))}
-          </select>
-        </label>
-
         <div className="flex min-w-[120px] flex-1 items-center gap-2">
           <span className="text-[11px] text-[var(--color-ink-muted)]">Level</span>
           <div className="h-2 flex-1 overflow-hidden rounded-full bg-[var(--color-surface-3)]">
@@ -158,9 +146,13 @@ export function AbPreview({ job, source, onClose, onModelChange }: AbPreviewProp
       </div>
 
       {state.status === 'error' && (
-        <p className="mt-3 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+        <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
           Live preview unavailable: {state.error}. Batch processing still works without it.
         </p>
+      )}
+
+      {state.status !== 'error' && state.note && (
+        <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-200">{state.note}</p>
       )}
     </Card>
   )

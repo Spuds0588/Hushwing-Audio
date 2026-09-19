@@ -2,13 +2,23 @@ import type { ModelId } from '../types/hushwing'
 
 export interface ModelSpec {
   id: ModelId
-  /** Short name shown in the selector. */
+  /** Short name shown on the engine card. */
   label: string
-  /** One-line description shown in the model card. */
+  /** One-line description shown under the name. */
   description: string
   tags: string[]
-  /** False → the option renders disabled. */
+  /** False → the engine renders disabled. */
   ready: boolean
+  /**
+   * The rate the engine wants its input at. Audio is decoded and resampled to
+   * this before it reaches the kernel, and the result is lifted to 48 kHz for
+   * delivery.
+   *
+   * - 16 kHz for the voice-band Web Audio chain, which is a telephone-band
+   *   chain by design: the band limit is part of what removes wideband hiss.
+   * - 48 kHz for RNNoise, which is trained at 48 kHz and refuses anything else.
+   */
+  inferenceRate: number
   /** Present-tense note about what is actually implemented. */
   implementation: string
 }
@@ -21,18 +31,20 @@ export const MODEL_SPECS: ModelSpec[] = [
       'High-pass filter, downward expander and dynamic compressor. Instant, zero download, good for steady room tone and level matching.',
     tags: ['instant', 'no download', 'offline'],
     ready: true,
+    inferenceRate: 16_000,
     implementation:
-      'Pure-JS chain: RBJ high-pass biquad → soft-knee compressor → soft limiter, so it renders in a worker without an AudioContext.',
+      'Pure-JS chain rendered in a worker: RBJ high-pass biquad → adaptive noise-floor gate → soft-knee compressor → soft limiter. No AudioContext needed.',
   },
   {
     id: 'rnnoise',
-    label: 'RNNoise-class denoiser',
+    label: 'RNNoise',
     description:
-      'Adaptive noise gate driven by a measured noise floor. Removes steady hiss and hum while leaving speech untouched.',
-    tags: ['fast', 'offline', 'speech-first'],
+      'Recurrent neural network trained on speech. Removes steady hiss, hum and fan noise while leaving speech untouched.',
+    tags: ['neural', 'wasm', '48 kHz'],
     ready: true,
+    inferenceRate: 48_000,
     implementation:
-      'Ships a framed gate/expander DSP profile. The id stays `rnnoise` for API compatibility; the RNNoise WASM weights are a drop-in follow-up.',
+      'Real RNNoise (Shiguredo WebAssembly build) driven through the browser audio graph, with the same binary driving the live A/B preview.',
   },
   {
     id: 'deepfilternet',
@@ -41,12 +53,18 @@ export const MODEL_SPECS: ModelSpec[] = [
       'Studio-grade neural suppression for complex, non-stationary background noise. Not available in this build.',
     tags: ['neural', 'planned'],
     ready: false,
+    inferenceRate: 48_000,
     implementation: 'Not implemented yet.',
   },
 ]
 
 export function getModelSpec(id: ModelId): ModelSpec | undefined {
   return MODEL_SPECS.find((spec) => spec.id === id)
+}
+
+/** The rate a model's kernel expects its input at. */
+export function inferenceRateFor(id: ModelId): number {
+  return getModelSpec(id)?.inferenceRate ?? 48_000
 }
 
 /** Only the models that actually run, i.e. what the headless API may advertise. */

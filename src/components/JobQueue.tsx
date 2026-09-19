@@ -101,6 +101,7 @@ export function JobQueue({ jobs, onRun, onRemove, onClearFinished, onPreview }: 
           <Button
             variant="ghost"
             size="sm"
+            data-mcp-action="export-zip"
             disabled={!canExport || exporting}
             onClick={async () => {
               setExporting(true)
@@ -131,7 +132,7 @@ export function JobQueue({ jobs, onRun, onRemove, onClearFinished, onPreview }: 
       {visible.length === 0 ? (
         <p className="rounded-xl border border-dashed border-border py-12 text-center text-sm text-[var(--color-ink-muted)]">
           {jobs.length === 0
-            ? 'Nothing queued yet. Drop a file above to get started.'
+            ? 'The queue is empty. Go back a step and add some files.'
             : 'No jobs match this filter.'}
         </p>
       ) : (
@@ -167,6 +168,8 @@ function JobRow({
       data-job-id={job.id}
       data-status={job.status}
       data-job-name={job.sourceName}
+      data-job-model={job.model}
+      data-job-decoder={job.decoder}
       className="flex flex-col gap-3 py-4 first:pt-0 last:pb-0"
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -178,6 +181,7 @@ function JobRow({
             <Badge variant={STATUS_VARIANT[job.status]}>{STATUS_LABEL[job.status]}</Badge>
             <Badge>{job.model}</Badge>
             <Badge>{job.outputFormat === 'video' ? 'video' : 'wav'}</Badge>
+            {job.decoder && <Badge>{job.decoder}</Badge>}
             {job.duration !== undefined && (
               <span className="text-[11px] tabular-nums text-[var(--color-ink-muted)]">
                 {job.duration.toFixed(1)}s source
@@ -221,7 +225,13 @@ function JobRow({
             </Button>
           )}
 
-          <Button variant="ghost" size="sm" onClick={() => onPreview(job)}>
+          <Button
+            variant="ghost"
+            size="sm"
+            data-mcp-action="open-ab-preview"
+            data-job-id={job.id}
+            onClick={() => onPreview(job)}
+          >
             A/B
           </Button>
 

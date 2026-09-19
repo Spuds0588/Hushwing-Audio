@@ -1,16 +1,20 @@
 import type { EngineResult, ModelId } from '../types/hushwing'
-import { createKernel, type DspKernel } from './dsp'
+import { createKernel, resample, type DspKernel } from './dsp'
 import { logger } from './logger'
+import { RNNOISE_RATE, renderWithRnnoise } from './rnnoise'
 import type { EnhanceRequest, EnhanceResponse } from '../workers/enhance-worker'
 
 /**
  * A Hushwing engine only needs a sample buffer and a rate. Keeping that
- * contract means the same DSP can be driven from:
+ * contract means the same model can be driven from:
  *
  * - a Web Worker for batch renders (Pipeline A — `WorkerEngine`)
  * - the main thread when workers are unavailable (`LocalEngine`)
  * - an `AudioWorkletNode` for real-time preview (Pipeline B — see
- *   `src/lib/preview.ts`, which mirrors `src/lib/dsp.ts`)
+ *   `src/lib/preview.ts`)
+ *
+ * The `rnnoise` engine ignores the worker: it is WebAssembly, and the browser
+ * audio rendering thread is the cheapest place to run it (`RnnoiseEngine`).
  */
 export interface HushwingEngine {
   readonly model: ModelId
@@ -126,6 +130,32 @@ class WorkerEngine implements HushwingEngine {
   }
 }
 
+/**
+ * Pipeline A for RNNoise: one command, one whole buffer, rendered by the audio
+ * graph. RNNoise is a 48 kHz framed recurrent network, so it has to be fed at
+ * 48 kHz; anything else is resampled on the way in and out.
+ */
+class RnnoiseEngine implements HushwingEngine {
+  readonly model: ModelId = 'rnnoise'
+
+  constructor(sampleRate: number) {
+    logger.debug(`rnnoise engine ready (inference rate ${sampleRate}Hz)`)
+  }
+
+  async process(input: Float32Array, sampleRate: number): Promise<EngineResult> {
+    const source = sampleRate === RNNOISE_RATE ? input : resample(input, sampleRate, RNNOISE_RATE)
+    const enhanced = await renderWithRnnoise(source)
+    const samples =
+      sampleRate === RNNOISE_RATE ? enhanced : resample(enhanced, RNNOISE_RATE, sampleRate)
+
+    // Frame counts stay exact, so a muxed video track cannot drift.
+    return { samples, sampleRate, channelCount: 1 }
+  }
+
+  /** The wasm binary is shared and cached; each render owns and frees its own state. */
+  dispose() {}
+}
+
 function workersSupported(): boolean {
   return typeof Worker !== 'undefined'
 }
@@ -136,6 +166,8 @@ function workersSupported(): boolean {
  * just because the worker could not start.
  */
 export function createEngine(model: ModelId, sampleRate: number): HushwingEngine {
+  if (model === 'rnnoise') return new RnnoiseEngine(sampleRate)
+
   if (workersSupported()) {
     try {
       return new WorkerEngine(model, sampleRate)

@@ -1,9 +1,9 @@
 # Hushwing Audio — TODO / Work Log
 
-Last updated: 2026-09-19 (session 4)
-Status: **v1 is complete, live, and studio-only.** The studio is the whole product (drop files,
-pick an engine, follow the queue), the queue processes local audio and video end to end, and the
-static build is deployed to GitHub Pages.
+Last updated: 2026-09-19 (session 5)
+Status: **v1 is complete, live, and studio-only.** The studio is a three-step wizard (add files →
+pick an engine → watch the queue), RNNoise is real WebAssembly, audio formats are decoded without
+ffmpeg, and the static build is deployed to GitHub Pages.
 
 ---
 
@@ -15,11 +15,11 @@ static build is deployed to GitHub Pages.
   `mcp.json`, `worklets/`, `coi-serviceworker.js`) with relative paths.
 - Preview commands saved: install `bun install`, dev `bun run dev` (5173), build `bunx vite build`.
 - Freebuff preview reaches ready; every module in the graph transforms without error.
-- **Verified end to end in a real browser (session 2):** `bun run test:e2e` drives Chromium through
-  the whole product and passes 21/21 — WAV, MP4 and WebM jobs all complete and the delivered bytes
-  are inspected, the A/B worklet preview plays and switches, the `.zip` export works, and the URL
-  params / `window.HushwingAPI` behave. Run headed (`HEADED=1` under `xvfb-run`) it also produces a
-  screenshot.
+- **Verified end to end in a real browser (session 5):** `bun run test:e2e` walks the wizard in
+  Chromium and passes 33/33 — WAV, MP3, FLAC, Ogg/Vorbis, MP4 and WebM jobs all complete through the
+  RNNoise engine, every delivered result's bytes are inspected, each job reports which decoder read
+  it, the live A/B audition plays and switches, the `.zip` export works, and the URL params /
+  `window.HushwingAPI` behave. Run headed (`HEADED=1` under `xvfb-run`) it also produces a screenshot.
 - **Live in production:** <https://spuds0588.github.io/Hushwing-Audio/> serves the built bundle and
   passes the same suite 21/21, with `crossOriginIsolated === true`, the ffmpeg core loaded from its
   own origin and no third-party requests.
@@ -31,10 +31,10 @@ static build is deployed to GitHub Pages.
       were removed in session 4 so there is nothing to get past.
 - [x] Drag & drop queue with per-job progress, stage labels, retry, remove, clear-finished.
 - [x] `ffmpeg.wasm` (single-threaded core, self-hosted in production with a CDN fallback and a
-      `VITE_FFMPEG_CORE_BASE` override) extraction to 16 kHz mono WAV and video remux with
-      `-c:v copy`.
-- [x] Pure-JS DSP kernels (`lib/dsp.ts`): high-pass, adaptive noise-floor gate, soft-knee
-      compressor, soft limiter, windowed-sinc resampler.
+      `VITE_FFMPEG_CORE_BASE` override) extraction to mono PCM at the engine's rate and video remux
+      with `-c:v copy`.
+- [x] Pure-JS DSP kernels (`lib/dsp.ts`): high-pass, soft-knee compressor, soft limiter,
+      windowed-sinc resampler.
 - [x] Pipeline A: `workers/enhance-worker.ts` renders batches off the main thread with
       transferable buffers; `createEngine` falls back to the main thread if workers are blocked.
 - [x] Pipeline B: `public/worklets/hushwing-preview.js` + `lib/preview.ts` drive a real-time A/B
@@ -71,6 +71,28 @@ static build is deployed to GitHub Pages.
       reappears, and checks the page renders styled with a usable drop target and no horizontal
       overflow (a blank or unstyled page fails the run).
 
+## 1a-2. Wizard, real RNNoise, more formats (session 5)
+
+- [x] **The studio is a wizard.** `add` → `engine` → `run`, one step on screen at a time
+      (`Stepper.tsx`, `AddStep.tsx`, `EngineStep.tsx`, `RunStep.tsx`). The step lives in the store,
+      so queueing a file ends step one, starting a batch jumps to step three, and a file added while
+      a batch is draining lands back on the running batch instead of on a step that cannot act on it.
+- [x] **`rnnoise` is real RNNoise** (`@sapphi-red/web-noise-suppressor` → Shiguredo WASM, 48 kHz),
+      in the batch render (offline audio graph) *and* the live A/B audition (the same processor and
+      the same wasm binary). The old gate/expander stand-in is deleted, not kept alongside it.
+- [x] **Audio formats are decoded in JavaScript** (`lib/decode.ts`: WAV reader, `mpg123-decoder`,
+      `@wasm-audio-decoders/flac`, all lazy), so a queue of audio makes zero `ffmpeg-core` requests.
+      M4A/AAC, Ogg/Vorbis and every video container still go through ffmpeg, and `job.decoder` says
+      which path ran.
+- [x] **Per-model inference rate** (`MODEL_SPECS[].inferenceRate`): 16 kHz for the Web Audio chain
+      (the band limit is part of the noise reduction), RNNoise's native 48 kHz; delivery is 48 kHz.
+- [x] **A/B switching is a gain ramp**, not a reconnection: one graph with a dry branch and a wet
+      branch, crossfaded over 20 ms, and the preview requests a 48 kHz `AudioContext` so RNNoise can
+      join it.
+- [x] Verified: main suite **33/33** and bulk **17/17** on the production build, plus a bulk run with
+      `BULK_MODEL=rnnoise` (24/24 jobs, heap +0.4 MB) to prove the per-job worklet
+      node + `OfflineAudioContext` do not leak.
+
 ## 1b. Bulk / queue workload — checked in session 3
 
 - [x] Bulk suite (`bun run test:bulk`, `e2e/hushwing.bulk.mjs`): 20-file drop + 1 video + 3 mid-run
@@ -106,12 +128,19 @@ static build is deployed to GitHub Pages.
 
 ## 3. v2 backlog
 
-- [ ] **RNNoise WASM**: vendor real weights behind the existing `rnnoise` id so the engine
-      matches the name (today it is an adaptive gate/expander profile, labelled as such).
+- [ ] **Decode more formats natively.** Ogg/Vorbis and M4A/AAC still need the 32 MB core. There is
+      no maintained Vorbis decoder in the `@wasm-audio-decoders` family (there is no
+      `ogg-vorbis-decoder` on npm), and `ogg-opus-decoder` drags in a 4 MB ML enhancement model for a
+      format we can already handle with ffmpeg — so both were rejected on purpose rather than by
+      omission.
+- [ ] **Trim the RNNoise frame latency.** Its delay line costs a fixed ~11 ms; compensating would
+      mean dropping ~512 samples from the head and padding the tail, which needs a measurement
+      rather than an argument.
+- [ ] **A 48 kHz `webaudio` profile.** The JS chain runs at 16 kHz (band-limited, cheap) while the
+      preview runs at 48 kHz, so the audition is slightly brighter than the delivered WAV.
 - [ ] **Verify the self-hosted core path on a deployed build**: `vite.config.ts` emits
       `dist/ffmpeg-core/*` (32 MB) and `lib/ffmpeg.ts` probes for it before falling back to
-      unpkg. Confirm the probe hits the local copy on Pages (check the network tab) and that the
-      first-load download is acceptable.
+      unpkg. Confirmed for the asset paths in session 3; worth re-checking after any bundler change.
 - [ ] **DeepFilterNet 3**: implement `ModelId: 'deepfilternet'` and enable the option.
 - [ ] **OPFS → ffmpeg**: mount `WORKERFS`/`PROXYFS` (or move to the multithreaded core with
       `SharedArrayBuffer`, now available thanks to COI) so the input never touches RAM.
@@ -133,7 +162,11 @@ static build is deployed to GitHub Pages.
    runtime probes that path before falling back to unpkg.
 3. **COI shipped, but inert when embedded.** The PRD wants `coi-serviceworker`; making it
    top-level-only avoids reload loops in sandboxed previews.
-4. **Honest model naming.** `rnnoise` is an adapted DSP profile and the UI says so. Promising a
-   neural model we do not ship would be worse than a slower roadmap.
-5. **Engine contract returns samples, not blobs.** Blob creation moved into the pipeline so
+4. **Honest model naming.** The engine called `rnnoise` is RNNoise, and when it was not, the UI said
+   so. Promising a neural model we do not ship would be worse than a slower roadmap.
+5. **One step at a time.** The wizard exists because a wall of controls is not a flow. If a new
+   feature needs a decision, it needs a place in a step — not another panel on the same screen.
+6. **Engine contract returns samples, not blobs.** Blob creation moved into the pipeline so
    results can stream to OPFS instead of being assembled in memory.
+7. **JavaScript decoders before ffmpeg.** The 32 MB core is a tool, not a requirement — WAV, MP3 and
+   FLAC are decoded in-process and lazily, and everything else falls through to ffmpeg.

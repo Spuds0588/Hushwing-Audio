@@ -195,10 +195,11 @@ async function run({
   }
 }
 
-/** Extract a mono 16 kHz PCM WAV track from any supported audio or video file. */
+/** Extract a mono PCM WAV track from any supported audio or video file. */
 export async function extractAudioToWav(
   input: Blob,
   inputName: string,
+  sampleRate: number,
   onProgress?: ProgressCallback
 ): Promise<Blob> {
   const dot = inputName.lastIndexOf('.')
@@ -206,7 +207,7 @@ export async function extractAudioToWav(
   const inName = `input${extension || '.bin'}`
   const outName = 'extracted.wav'
 
-  logger.info(`Extracting audio track → 16 kHz mono WAV (${inputName})`)
+  logger.info(`Extracting audio track → ${sampleRate / 1000} kHz mono WAV (${inputName})`)
 
   return run({
     label: 'extracting the audio track',
@@ -223,7 +224,7 @@ export async function extractAudioToWav(
       '-ac',
       '1',
       '-ar',
-      '16000',
+      String(sampleRate),
       outName,
     ],
   })

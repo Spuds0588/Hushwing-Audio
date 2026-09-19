@@ -1,7 +1,7 @@
 import type { ModelId } from '../types/hushwing'
 
 /**
- * Pure-JS DSP kernels.
+ * Pure-JS DSP kernels for the `webaudio` engine.
  *
  * Everything here is allocation-light, streaming and dependency-free, which is
  * what lets the *same* algorithms run in three places:
@@ -9,11 +9,14 @@ import type { ModelId } from '../types/hushwing'
  * - `src/workers/enhance-worker.ts` (Pipeline A, offline batch render)
  * - `public/worklets/hushwing-preview.js` (Pipeline B, real-time preview —
  *   a hand-mirrored copy, because an AudioWorklet module cannot import TS)
- * - `src/lib/pipeline.ts` on the main thread (fallback when workers are blocked)
+ * - `src/lib/engine.ts` on the main thread (fallback when workers are blocked)
  *
  * Kernels are stateful and block-size agnostic: state carries across calls, so
  * a kernel can be fed 5 ms frames in a worklet or one big buffer offline and
  * produce the same result.
+ *
+ * The `rnnoise` engine is not here: it is real WebAssembly, driven through the
+ * browser audio graph — see `src/lib/rnnoise.ts`.
  */
 export interface DspKernel {
   /** Process a block in place. */
@@ -157,77 +160,6 @@ export class Compressor implements DspKernel {
 }
 
 /**
- * Adaptive noise gate / downward expander.
- *
- * Estimates the noise floor with minimum-statistics tracking (snap down to a
- * quieter frame, creep up slowly), then attenuates each frame relative to that
- * floor. Speech stays untouched; steady hiss, hum and room tone collapse.
- *
- * This is the DSP profile the "rnnoise" model id points at — see
- * `src/lib/models.ts` and `todo.md` for why the id is kept.
- */
-export class FrameGate implements DspKernel {
-  private openRatio = 4
-  private closedRatio = 1.5
-  private minGain = 0.07
-  private envCoef: number
-  private attackCoef: number
-  private releaseCoef: number
-
-  /** Smoothed signal power. */
-  private env = 0
-  /** Tracked noise-floor power. */
-  private floor: number | null = null
-  private gain = 1
-
-  constructor(sampleRate: number) {
-    this.envCoef = Math.exp(-1 / Math.max(1, sampleRate * 0.01))
-    this.attackCoef = Math.exp(-1 / Math.max(1, sampleRate * 0.003))
-    this.releaseCoef = Math.exp(-1 / Math.max(1, sampleRate * 0.12))
-  }
-
-  process(input: Float32Array) {
-    for (let i = 0; i < input.length; i++) {
-      const sample = input[i]
-      this.env = sample * sample + this.envCoef * (this.env - sample * sample)
-
-      // Minimum-statistics floor tracker: snap down on quiet frames, creep up
-      // slowly so a sustained note is never mistaken for room tone.
-      if (this.floor === null) this.floor = this.env
-      this.floor =
-        this.env < this.floor
-          ? this.env + (this.floor - this.env) * 0.05
-          : this.floor + (this.env - this.floor) * 0.0004
-
-      const noise = Math.sqrt(Math.max(this.floor, 1e-10))
-      const level = Math.sqrt(Math.max(this.env, 1e-10))
-      const ratio = level / Math.max(noise, 1e-5)
-
-      let target = this.minGain
-      if (ratio >= this.openRatio) {
-        target = 1
-      } else if (ratio > this.closedRatio) {
-        const shape = clamp01(
-          (Math.log(ratio) - Math.log(this.closedRatio)) /
-            (Math.log(this.openRatio) - Math.log(this.closedRatio))
-        )
-        target = this.minGain + (1 - this.minGain) * shape
-      }
-
-      const coef = target > this.gain ? 1 - this.attackCoef : 1 - this.releaseCoef
-      this.gain += (target - this.gain) * coef
-      input[i] = sample * this.gain
-    }
-  }
-
-  reset() {
-    this.env = 0
-    this.floor = null
-    this.gain = 1
-  }
-}
-
-/**
  * In-place soft limiter. Everything below `threshold` passes through untouched;
  * above it the signal approaches `ceiling` asymptotically, so the gain stages
  * before it cannot push the render into hard clipping.
@@ -276,19 +208,10 @@ export function createKernel(model: ModelId, sampleRate: number): DspKernel {
         new SoftLimiter(),
       ])
     case 'rnnoise':
-      return new Chain([
-        new Highpass(sampleRate, 70),
-        new FrameGate(sampleRate),
-        new Compressor(sampleRate, {
-          threshold: -12,
-          ratio: 2,
-          knee: 6,
-          attack: 0.008,
-          release: 0.2,
-          makeup: 1.1,
-        }),
-        new SoftLimiter(),
-      ])
+      // Not a JS kernel: RNNoise is WebAssembly, driven through the browser
+      // audio graph by `src/lib/rnnoise.ts`. Reaching this means something
+      // asked the wrong layer to render it.
+      throw new Error('RNNoise renders through the WebAssembly engine, not the JS kernels')
     case 'deepfilternet':
       throw new Error('DeepFilterNet 3 is not available in this build yet.')
     default: {
@@ -391,10 +314,6 @@ export function peakLevel(samples: Float32Array): number {
     if (value > max) max = value
   }
   return max
-}
-
-function clamp01(value: number): number {
-  return value < 0 ? 0 : value > 1 ? 1 : value
 }
 
 function clampIndex(index: number, last: number): number {

@@ -140,7 +140,13 @@ const heap = () =>
 const toMB = (bytes) => (bytes === null ? 'n/a' : `${(bytes / 1024 / 1024).toFixed(1)} MB`)
 
 try {
-  await page.goto(`${BASE}/?autostart=true&coi=off#studio`, { waitUntil: 'networkidle' })
+  // BULK_MODEL=rnnoise runs the whole batch through the WebAssembly engine, which
+  // is the path that allocates something per job (a worklet node and an
+  // OfflineAudioContext), so it is the one worth hammering with a long queue.
+  const model = process.env.BULK_MODEL
+  const query = `?autostart=true&coi=off${model ? `&model=${model}` : ''}#studio`
+  console.log(`INFO  engine under test: ${model ?? 'default (webaudio)'}`)
+  await page.goto(`${BASE}/${query}`, { waitUntil: 'networkidle' })
   // The file input is intentionally hidden, so wait for it to be attached, not visible.
   await page.waitForSelector('input[data-mcp-action="upload"]', { state: 'attached', timeout: 20_000 })
 
@@ -232,12 +238,31 @@ try {
       buffer: makeWav(1),
     })
   }
+
+  // The drop target only exists on step 1, so mid-run arrivals go through the
+  // wizard's "Add more files" — and landing back on the running batch is part of
+  // what is being checked here.
+  await page.click('button[data-mcp-action="wizard-back"]')
+  await page.waitForFunction(() => document.querySelector('main')?.dataset.wizardStep === 'add', null, {
+    timeout: 10_000,
+  })
   await page.setInputFiles('input[data-mcp-action="upload"]', arrivals)
+  await sleep(500)
+
+  const stepAfterArrival = await page.getAttribute('main', 'data-wizard-step')
+  await page.click('[data-mcp-target="wizard-step"][data-step="run"]')
+  await sleep(300)
+
   const afterArrival = await rows()
   record(
     'files dropped mid-run are accepted into the queue',
     afterArrival.length === drop.length + ARRIVALS,
     `${afterArrival.length} rows`
+  )
+  record(
+    'arrivals mid-run land back on the running batch, not on a step that cannot run them',
+    stepAfterArrival === 'run',
+    `step=${stepAfterArrival}`
   )
 
   const expected = drop.length + ARRIVALS

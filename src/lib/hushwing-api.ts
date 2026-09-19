@@ -32,6 +32,8 @@ export interface HushwingAPI {
     error?: string
     /** Non-fatal note, e.g. a video-format job whose source had no video track. */
     warning?: string
+    /** Which decoder produced the PCM (`mp3`, `flac`, `wav reader`, `ffmpeg`). */
+    decoder?: string
   }[]
   /** Download the rolling diagnostic log as a .txt file. */
   downloadDebugLog(): void
@@ -48,8 +50,8 @@ const api: HushwingAPI = {
     return availableModelIds()
   },
 
-  async processMedia({ file, model = 'webaudio' }) {
-    const job = await processFile(file, model)
+  async processMedia({ file, model }) {
+    const job = await processFile(file, model ?? useAppStore.getState().model)
 
     if (job.status !== 'completed' || !job.resultUrl) {
       throw new Error(job.error ?? `Job ${job.id} did not complete`)
@@ -62,9 +64,11 @@ const api: HushwingAPI = {
     return response.blob()
   },
 
-  async queueMedia({ file, model = 'webaudio' }) {
+  async queueMedia({ file, model }) {
     const store = useAppStore.getState()
-    const job = store.enqueue(file, model)
+    // Fall back to whatever engine the studio has selected, so a headless caller
+    // and the person watching the screen agree on what is about to run.
+    const job = store.enqueue(file, model ?? store.model)
     return job.id
   },
 
@@ -78,6 +82,7 @@ const api: HushwingAPI = {
       resultUrl: job.resultUrl,
       error: job.error,
       warning: job.warning,
+      decoder: job.decoder,
     }))
   },
 

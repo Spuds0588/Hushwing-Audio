@@ -389,3 +389,98 @@ usable drop target and no horizontal overflow, so a blank page fails instead of 
 - A batch of large media (the ~1 GB OPFS quota is the real bound, not file count).
 - A genuinely huge batch (500+ files, or multi-GB video) — the suite's ceiling here was 24 small
   jobs, which is bounded by this sandbox rather than by the app.
+
+---
+
+## Session 5 — 2026-09-19
+
+### Goal
+
+The studio still rendered everything at once. Make it a wizard, then make the audio cleaning and the
+format support actually good rather than nominal.
+
+### The wizard
+
+The single page became `add` → `engine` → `run`, with only the current step mounted:
+`Stepper.tsx`, `AddStep.tsx`, `EngineStep.tsx`, `RunStep.tsx`, composed by `App.tsx`. The step is
+store state, not component state, because the queue has to be able to move it:
+
+| Event | Where it lands |
+| --- | --- |
+| A file is queued (drop, API, `?autostart`) | `engine`, or `run` if a batch is already draining |
+| The batch starts | `run` |
+| "Add more files" | `add` |
+| "Start over" | `add`, after purging the queue and its OPFS results |
+
+The engine choice also stopped being a snapshotted dropdown value: `setModel()` now re-models every
+job still waiting, so picking an engine at step 2 applies to the whole queue instead of only to
+whatever gets dropped next.
+
+### Real RNNoise, in both pipelines
+
+`rnnoise` was an adaptive gate/expander wearing the name — the one thing in the repo that was not
+what it said it was. It is now Shiguredo's WebAssembly build via
+`@sapphi-red/web-noise-suppressor`, driven two ways with **the same processor and the same wasm
+binary**:
+
+- **Batch:** `OfflineAudioContext(1, frames, 48000)` → RNNoise worklet → destination, rendered by
+  `startRendering()`. The audio rendering thread is the cheapest correct place to run a 48 kHz framed
+  recurrent network, and it does not block the UI.
+- **Preview:** the identical node, live in the A/B graph.
+
+`FrameGate` and the second `createKernel` profile are deleted. `createKernel('rnnoise')` now throws,
+because reaching it means something asked the wrong layer to render the model.
+
+Two things this forced:
+
+1. **A per-model inference rate** (`MODEL_SPECS[].inferenceRate`). RNNoise refuses anything but
+   48 kHz, while the Web Audio chain is deliberately 16 kHz — its band limit is part of the noise
+   reduction. `prepareAudio()` decodes, resamples to that rate, and delivery stays 48 kHz.
+2. **A new preview graph.** The worklet's `bypass` flag only worked because it held both profiles.
+   With a second engine in the wet path, bypass became a routing decision:
+
+   ```
+                    ┌─ dry ─────────────────────┐
+     <audio> ───────┤                            │
+                   ├─ dsp worklet ─ dsp gain ───┼──► analyser ─► out
+                   └─ rnnoise ─── rnnoise gain ┘
+   ```
+
+   A/B now ramps gains over 20 ms. Nothing is reconnected, so it is still click-free, and the dry
+   branch is a true bypass rather than a flag inside the processor. The preview also asks for
+   `AudioContext({ sampleRate: 48000 })`, because RNNoise needs it and the comparison happens against
+   a 48 kHz delivery; a browser that refuses gets an amber note instead of a broken panel.
+
+### Formats: decode without ffmpeg
+
+`src/lib/decode.ts` decodes WAV, MP3 and FLAC in JavaScript (`mpg123-decoder`,
+`@wasm-audio-decoders/flac`, both behind dynamic `import()`), so an audio job never downloads the
+32 MB core and `App.tsx` only preloads it for work that needs it. Everything else — M4A/AAC,
+Ogg/Vorbis, every video container — still goes through ffmpeg, and the pipeline falls back to ffmpeg
+if a JavaScript decoder recognises a container but cannot read it. `job.decoder` records which path
+ran, which is what makes the claim testable rather than aspirational.
+
+Ogg/Opus was wired up and then removed again: `ogg-opus-decoder` pulls in a **4 MB** ML enhancement
+model, it cannot read Ogg/Vorbis (which is what `.ogg` usually is), and ffmpeg already handles Opus.
+A 4 MB dependency for a format nothing in the product needed was not worth defending.
+
+### Verification
+
+Against the production bundle, served exactly as Pages serves it:
+
+- main suite **33/33**, zero console errors, `crossOriginIsolated === true`. Six jobs, all through
+  RNNoise: `wav reader` / `mp3` / `flac` decoded natively, `ffmpeg` for Ogg/Vorbis and the videos;
+  WAV `384 044 B · 48 000 Hz · mono`, MP3 `306 826 B`, FLAC (122 s) `11 716 276 B`, WebM → WebM,
+  MP4 → MP4, zip `18.7 MB`; the live RNNoise audition ran with no caveat and the meter moved.
+- bulk suite **17/17**, 24/24 jobs, heap +0.4 MB, "23 wav + 1 video".
+- bulk suite with `BULK_MODEL=rnnoise` **17/17**: 24 jobs each allocating a worklet node and an
+  `OfflineAudioContext`, heap +0.4 MB, no crashes — the leak test that mattered for a wasm engine.
+- No `ffmpeg-core` request appears in the server log for an audio-only run.
+
+### A test-side lesson, again
+
+Two failures in this session were the harness, not the app: reading the step-1 file list while the
+wizard had already advanced to step 2, and clicking a step-1 button from step 2. Both are the same
+mistake — assuming a control exists because it exists somewhere in the flow. The suites now navigate
+by `data-wizard-step` and assert that step one is the *only* step rendered, so a regression that puts
+the whole UI back on one screen fails loudly.

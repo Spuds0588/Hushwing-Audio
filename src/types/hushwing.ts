@@ -45,6 +45,11 @@ export interface Job {
   error?: string
   /** Non-fatal note, e.g. muxing failed and the enhanced audio was exported instead. */
   warning?: string
+  /**
+   * Which decoder produced the PCM: `wav reader`, `mp3`, `flac`, `opus`, or
+   * `ffmpeg` when the container needed the 32 MB core.
+   */
+  decoder?: string
   /** Object URL of the finished result, ready for a download link. */
   resultUrl?: string
   /** Virtual path of the staged input inside OPFS. */

@@ -1,4 +1,5 @@
 import { computePeaks } from './dsp'
+import { RNNOISE_RATE, createRnnoisePreviewNode } from './rnnoise'
 import { logger } from './logger'
 import type { ModelId } from '../types/hushwing'
 
@@ -16,10 +17,14 @@ export interface PreviewState {
   /** Output level, 0–1, for the meter. */
   level: number
   error?: string
+  /** Non-fatal caveat, e.g. RNNoise live preview unavailable at this rate. */
+  note?: string
 }
 
 const WORKLET_NAME = 'hushwing-preview'
 const PEAK_BUCKETS = 320
+/** Short enough to feel instant, long enough not to click when A/B is switched. */
+const CROSSFADE = 0.02
 
 const INITIAL_STATE: PreviewState = {
   status: 'idle',
@@ -35,17 +40,30 @@ const INITIAL_STATE: PreviewState = {
 /**
  * Pipeline B — real-time A/B preview.
  *
- * The source `<audio>` element is routed through an `AudioWorkletNode` that runs
- * the same DSP profile as the batch render (see `public/worklets/hushwing-preview.js`).
- * Both sides of the comparison stay on one signal path, so flipping between A
- * and B never re-connects the graph — it only flips a flag inside the worklet.
+ * The graph is built once and never rewired:
+ *
+ * ```
+ *                 ┌─ dry ─────────────────────┐
+ *   source ───────┤                            │
+ *                 ├─ dsp worklet ─ dsp gain ───┼──→ analyser → speakers
+ *                 └─ rnnoise ─── rnnoise gain ┘
+ * ```
+ *
+ * Switching A/B only moves gains, so the comparison never stops the audio, and
+ * the "wet" branch is whichever engine is selected. The dry branch is a true
+ * bypass, which is the honest thing to compare against.
  */
 export class PreviewSession {
   private state: PreviewState = INITIAL_STATE
   private listeners = new Set<() => void>()
   private audio: HTMLAudioElement | null = null
   private context: AudioContext | null = null
-  private node: AudioWorkletNode | null = null
+  private source: MediaElementAudioSourceNode | null = null
+  private dspNode: AudioWorkletNode | null = null
+  private rnnoiseNode: AudioWorkletNode | null = null
+  private dryGain: GainNode | null = null
+  private dspGain: GainNode | null = null
+  private rnnoiseGain: GainNode | null = null
   private analyser: AnalyserNode | null = null
   private levelBuffer: Float32Array<ArrayBuffer> | null = null
   private url: string
@@ -126,16 +144,47 @@ export class PreviewSession {
 
   setBypassed(value: boolean): void {
     this.patch({ bypassed: value })
-    this.node?.port.postMessage({ type: 'bypass', value })
+    this.route()
   }
 
-  setModel(model: ModelId): void {
+  /**
+   * Switch the live engine. The graph is reused: either the Web Audio worklet
+   * or an RNNoise node is the wet branch, and the other one is silenced.
+   */
+  async setModel(model: ModelId): Promise<void> {
+    // Re-selecting the current engine is a no-op unless the last attempt left a
+    // caveat behind, in which case it is worth trying again.
+    const unchanged = this.state.model === model
+    if (unchanged && this.state.note === undefined) return
     this.patch({ model })
-    this.node?.port.postMessage({ type: 'model', value: model })
+
+    if (!this.context) return
+
+    if (model === 'rnnoise' && !this.rnnoiseNode) {
+      try {
+        const node = await createRnnoisePreviewNode(this.context)
+        if (node) {
+          this.source?.connect(node)
+          if (this.rnnoiseGain) node.connect(this.rnnoiseGain)
+          this.rnnoiseNode = node
+          this.patch({ note: undefined })
+        } else {
+          this.patch({
+            note: 'RNNoise needs a 48 kHz audio device; the live preview is showing the Web Audio chain instead. Batch processing still uses RNNoise.',
+          })
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'RNNoise could not load'
+        logger.warn(`rnnoise preview unavailable: ${message}`)
+        this.patch({ note: `RNNoise live preview unavailable (${message}). Batch processing still uses it.` })
+      }
+    }
+
+    this.route()
   }
 
   async ensureGraph(): Promise<void> {
-    if (this.node && this.context && this.audio) return
+    if (this.dspNode && this.context && this.audio) return
 
     const AudioContextCtor: typeof AudioContext | undefined =
       typeof window === 'undefined'
@@ -145,7 +194,10 @@ export class PreviewSession {
 
     if (!AudioContextCtor) throw new Error('This browser does not support the Web Audio API')
 
-    const context = new AudioContextCtor()
+    // Ask for 48 kHz rather than accepting the device rate: the preview is
+    // compared against the 48 kHz delivery, and RNNoise only runs at 48 kHz.
+    // A browser that ignores the hint still gets a working Web Audio preview.
+    const context = new AudioContextCtor({ sampleRate: RNNOISE_RATE })
     if (!context.audioWorklet) {
       throw new Error('This browser does not support AudioWorklet, so live preview is unavailable')
     }
@@ -166,26 +218,62 @@ export class PreviewSession {
     })
 
     const source = context.createMediaElementSource(audio)
-    const node = new AudioWorkletNode(context, WORKLET_NAME, {
+    const dspNode = new AudioWorkletNode(context, WORKLET_NAME, {
       numberOfInputs: 1,
       numberOfOutputs: 1,
       outputChannelCount: [1],
     })
+    const dryGain = context.createGain()
+    const dspGain = context.createGain()
+    const rnnoiseGain = context.createGain()
     const analyser = context.createAnalyser()
     analyser.fftSize = 1024
 
-    source.connect(node)
-    node.connect(analyser)
+    dryGain.gain.value = 0
+    dspGain.gain.value = 0
+    rnnoiseGain.gain.value = 0
+
+    source.connect(dryGain)
+    source.connect(dspNode)
+    dspNode.connect(dspGain)
+    dryGain.connect(analyser)
+    dspGain.connect(analyser)
+    rnnoiseGain.connect(analyser)
     analyser.connect(context.destination)
 
-    node.port.postMessage({ type: 'model', value: this.state.model })
-    node.port.postMessage({ type: 'bypass', value: this.state.bypassed })
-
     this.context = context
+    this.source = source
     this.audio = audio
-    this.node = node
+    this.dspNode = dspNode
+    this.dryGain = dryGain
+    this.dspGain = dspGain
+    this.rnnoiseGain = rnnoiseGain
     this.analyser = analyser
     this.levelBuffer = new Float32Array(analyser.fftSize)
+
+    await this.setModel(this.state.model)
+    this.route()
+  }
+
+  /** Point the output at the dry branch or at the selected engine. */
+  private route(): void {
+    const context = this.context
+    if (!context) return
+
+    const bypassed = this.state.bypassed
+    const useRnnoise = this.state.model === 'rnnoise' && this.rnnoiseNode !== null
+
+    this.rampTo(this.dryGain, bypassed ? 1 : 0)
+    this.rampTo(this.dspGain, !bypassed && !useRnnoise ? 1 : 0)
+    this.rampTo(this.rnnoiseGain, !bypassed && useRnnoise ? 1 : 0)
+  }
+
+  private rampTo(gain: GainNode | null, value: number): void {
+    if (!gain || !this.context) return
+    // Cancel first: repeated switches must not stack ramps on top of each other.
+    gain.gain.cancelScheduledValues(this.context.currentTime)
+    gain.gain.setValueAtTime(gain.gain.value, this.context.currentTime)
+    gain.gain.linearRampToValueAtTime(value, this.context.currentTime + CROSSFADE)
   }
 
   private startMeter() {
@@ -235,14 +323,24 @@ export class PreviewSession {
     this.audio?.pause()
 
     try {
-      this.node?.disconnect()
+      this.dspNode?.disconnect()
+      this.source?.disconnect()
+      this.dryGain?.disconnect()
+      this.dspGain?.disconnect()
+      this.rnnoiseGain?.disconnect()
+      this.rnnoiseNode?.disconnect()
       this.analyser?.disconnect()
       await this.context?.close()
     } catch {
       // Nothing useful to do if the context is already gone.
     }
 
-    this.node = null
+    this.dspNode = null
+    this.rnnoiseNode = null
+    this.source = null
+    this.dryGain = null
+    this.dspGain = null
+    this.rnnoiseGain = null
     this.analyser = null
     this.audio = null
     this.context = null

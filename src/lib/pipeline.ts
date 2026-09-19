@@ -2,13 +2,14 @@ import { useAppStore } from '../store/app'
 import { logger } from './logger'
 import { extractAudioToWav, muxVideo, stageFileInOPFS } from './ffmpeg'
 import { createEngine } from './engine'
+import { decodeAudioNatively, type DecodedAudio } from './decode'
 import { encodeWavChunks, fileNameOf, isVideo, parseWav, suggestedOutputFilename } from './filekit'
 import { openOPFSWriter, readDataFromOPFS, removeFromOPFS } from './opfs'
 import { resample } from './dsp'
+import { inferenceRateFor } from './models'
 import type { Job, ModelId } from '../types/hushwing'
 
-/** Models run at 16 kHz; results are lifted back to 48 kHz for delivery. */
-export const INFERENCE_RATE = 16_000
+/** Everything is delivered at 48 kHz; each engine declares the rate it wants in. */
 export const DELIVERY_RATE = 48_000
 
 /** Add a file to the queue without starting work. The output format follows the source. */
@@ -61,32 +62,30 @@ export async function runJob(jobId: string): Promise<Job> {
     }
 
     store.setJobStatus(jobId, 'processing')
-    report({ startedAt, stage: 'Extracting audio', progress: 12 })
 
-    const extracted = await extractAudioToWav(sourceBlob, staged.name, (fraction) => {
-      report({ progress: 12 + Math.round(fraction * 26), stage: 'Extracting audio' })
-    })
-
-    report({ progress: 40, stage: 'Decoding PCM' })
-    const pcm = await parseWav(extracted)
-    report({ duration: pcm.samples.length / pcm.sampleRate })
+    const rate = inferenceRateFor(model)
+    const prepared = await prepareAudio(sourceBlob, staged.name, rate, (progress, stage) =>
+      report({ progress, stage })
+    )
+    report({ duration: prepared.samples.length / rate, decoder: prepared.decoder })
 
     logger.info(
-      `${model}: enhancing ${pcm.samples.length} samples @ ${pcm.sampleRate}Hz (${sourceKind})`
+      `${model}: enhancing ${prepared.samples.length} samples @ ${rate}Hz ` +
+        `(${sourceKind}, ${prepared.decoder}, source ${prepared.sourceRate}Hz)`
     )
 
-    report({ progress: 45, stage: 'Enhancing with ' + model })
-    const engine = createEngine(model, INFERENCE_RATE)
+    report({ progress: 46, stage: `Enhancing with ${engineLabel(model)}` })
+    const engine = createEngine(model, rate)
     let enhanced: Float32Array
     try {
-      const result = await engine.process(pcm.samples, INFERENCE_RATE)
+      const result = await engine.process(prepared.samples, rate)
       enhanced = result.samples
     } finally {
       engine.dispose()
     }
 
-    report({ progress: 72, stage: 'Resampling to 48 kHz' })
-    const delivered = resample(enhanced, INFERENCE_RATE, DELIVERY_RATE)
+    report({ progress: 76, stage: 'Writing the result' })
+    const delivered = rate === DELIVERY_RATE ? enhanced : resample(enhanced, rate, DELIVERY_RATE)
 
     // Stream the result to disk instead of assembling one giant blob in RAM.
     const wavPath = `outputs/${jobId}.wav`
@@ -168,6 +167,69 @@ export async function runJob(jobId: string): Promise<Job> {
     // The staged copy is never needed again; the result stays in OPFS.
     if (stagePath) await removeFromOPFS(stagePath).catch(() => false)
   }
+}
+
+interface PreparedAudio {
+  samples: Float32Array
+  /** Which decoder produced the PCM, for the log and the UI. */
+  decoder: string
+  /** The rate the source was at before it was resampled for the engine. */
+  sourceRate: number
+}
+
+/**
+ * Get mono PCM at the rate the engine wants.
+ *
+ * WAV, MP3, FLAC and Ogg-Opus are decoded in plain JavaScript, so those jobs
+ * never make the browser fetch the 32 MB ffmpeg core. Everything else — video
+ * containers, M4A/AAC, Ogg-Vorbis — goes through ffmpeg, which also does the
+ * resampling for free.
+ *
+ * Progress stays in the 12–42 band so the batch bar never moves backwards.
+ */
+async function prepareAudio(
+  source: Blob,
+  name: string,
+  rate: number,
+  report: (progress: number, stage: string) => void
+): Promise<PreparedAudio> {
+  report(12, 'Reading audio')
+
+  let decoded: DecodedAudio | null = null
+  try {
+    decoded = await decodeAudioNatively(source, name)
+  } catch (error) {
+    // A decoder that recognises the container but cannot read it must not fail
+    // the job: ffmpeg gets a turn next.
+    logger.warn(
+      `native decode failed for ${name}: ${
+        error instanceof Error ? error.message : 'unknown error'
+      } — falling back to ffmpeg`
+    )
+  }
+
+  if (decoded) {
+    report(40, `Decoded with the ${decoded.decoder}`)
+  } else {
+    const extracted = await extractAudioToWav(source, name, rate, (fraction) =>
+      report(12 + Math.round(fraction * 26), 'Extracting the audio track')
+    )
+    decoded = { ...(await parseWav(extracted)), decoder: 'ffmpeg' }
+    report(42, 'Decoded the audio track')
+  }
+
+  const { samples, sampleRate, decoder } = decoded
+  if (sampleRate === rate) {
+    return { samples, decoder, sourceRate: sampleRate }
+  }
+
+  const resampled = resample(samples, sampleRate, rate)
+  logger.info(`resampled ${sampleRate}Hz → ${rate}Hz (${resampled.length} samples)`)
+  return { samples: resampled, decoder, sourceRate: sampleRate }
+}
+
+function engineLabel(model: ModelId): string {
+  return model === 'rnnoise' ? 'RNNoise' : 'the Web Audio chain'
 }
 
 /** Convenience: queue a file and immediately process it (used by the headless API). */

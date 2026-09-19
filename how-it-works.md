@@ -8,10 +8,10 @@ The whole app is client-side. There is no server to call, no upload step to reas
 place for media to escape: a job is just a `File` that goes into the Origin Private File System and
 comes back out as a different `File`.
 
-It is also one page with one decision in it. Files are dragged in, an engine is picked, and the
-queue reports progress; the output follows the source (a video keeps its picture with the enhanced
-track muxed back in, audio comes back as a 48 kHz WAV) so there is no format to choose and no
-import source to configure.
+It is also one page with one decision in it, arranged as a **three-step wizard**: add files, pick an
+engine, watch the queue. Only the current step is on screen. The output follows the source (a video
+keeps its picture with the enhanced track muxed back in, audio comes back as a 48 kHz WAV) so there
+is no format to choose and no import source to configure.
 
 ## 1. The shape of a job
 
@@ -23,17 +23,14 @@ File/Blob
    │  stageFileInOPFS()                    4 → 8 %   "Copying into OPFS"
    ▼
 OPFS uploads/<ts>-<rand>.<ext>
-   │  read back as a Blob, hand to ffmpeg
-   │  extractAudioToWav()                 12 → 38 %  "Extracting audio"
+   │  read back as a Blob
+   │  prepareAudio()                       12 → 42 %  "Reading audio"
    ▼
-16 kHz mono PCM WAV  (-vn -ac 1 -acodec pcm_s16le -ar 16000)
-   │  parseWav()  (own parser, no AudioContext)  40 %
+Float32Array @ the engine's inference rate, mono
+   │  createEngine(model).process()        46 %      "Enhancing with <model>"
    ▼
-Float32Array @ 16 kHz
-   │  createEngine(model).process()        45 → 72 %  "Enhancing with <model>"
-   ▼
-enhanced Float32Array @ 16 kHz
-   │  resample(16 kHz → 48 kHz)            72 %
+enhanced Float32Array @ the inference rate
+   │  resample(inference → 48 kHz)         76 %      (a no-op when they already match)
    ▼
 Float32Array @ 48 kHz
    │  encodeWavChunks() → openOPFSWriter()  streamed, 1 MiB chunks
@@ -44,10 +41,22 @@ OPFS outputs/<jobId>.wav
 OPFS outputs/<jobId>.<ext>  →  object URL  →  the download link
 ```
 
-Two rates are involved, and they are constants on purpose:
+`prepareAudio()` is where the format work happens, and it has two paths:
 
-- **16 kHz is the inference rate.** Speech intelligibility lives below 8 kHz, and every sample the
-  DSP touches costs time and memory. Denoisers in the wild are trained at 16 kHz for the same reason.
+1. **JavaScript decoders first** (`src/lib/decode.ts`). WAV, MP3 and FLAC are decoded in-process, so
+   an audio job starts immediately and never downloads the 32 MB ffmpeg core. Those decoders are
+   imported lazily, so a queue of video never downloads them either. `job.decoder` records exactly
+   which one ran.
+2. **ffmpeg for everything else** — M4A/AAC, Ogg/Vorbis, and any video container — which also
+   resamples to the target rate for free. If a JavaScript decoder recognises a container but cannot
+   read it, the job falls back to ffmpeg rather than failing.
+
+Two rates are involved:
+
+- **The inference rate belongs to the engine**, and `MODEL_SPECS[].inferenceRate` declares it. The
+  Web Audio chain runs at **16 kHz**: speech intelligibility lives below 8 kHz, so 16 kHz is the
+  band limit as well as the cheap choice. RNNoise runs at **48 kHz**, which is not a preference —
+  it is trained there and refuses anything else.
 - **48 kHz is the delivery rate.** It is what video containers and editors expect, so muxed results
   do not need an arbitrary resample downstream.
 
@@ -84,63 +93,56 @@ the same result. That property is what makes the two pipelines in §3 possible a
 | --- | --- |
 | `Highpass` | RBJ biquad, transposed direct form II, default `Q = 0.7071`. Kills rumble, HVAC and desk thumps below the voice band |
 | `Compressor` | Feed-forward, soft knee (quadratic), exponential attack/release ballistics, makeup gain. Even out level without pumping |
-| `FrameGate` | Adaptive noise gate / downward expander driven by a tracked noise floor — the `rnnoise` profile |
 | `SoftLimiter` | Below the threshold: untouched. Above it: asymptotic approach to the ceiling, so the gain stages before it cannot hard-clip |
 | `Chain` | Runs kernels in order; `resample`, `computePeaks` and `peakLevel` are the free functions |
 
-### The two profiles
+### The `webaudio` profile
 
-`createKernel(model, sampleRate)` wires the chains:
+`createKernel('webaudio', sampleRate)` wires the chain:
 
 ```
-webaudio   Highpass 85 Hz
-        →  Compressor   −18 dB · 3:1 · knee 8 dB · attack 4 ms · release 140 ms · makeup 1.18
-        →  SoftLimiter  ceiling 0.98, threshold 0.8
-
-rnnoise    Highpass 70 Hz
-        →  FrameGate    open at 4× the noise floor, closed below 1.5×, floor −23 dB when shut
-        →  Compressor   −12 dB · 2:1 · knee 6 dB · attack 8 ms · release 200 ms · makeup 1.1
-        →  SoftLimiter
+Highpass 85 Hz
+ →  Compressor   −18 dB · 3:1 · knee 8 dB · attack 4 ms · release 140 ms · makeup 1.18
+ →  SoftLimiter  ceiling 0.98, threshold 0.8
 ```
-
-The interesting one is `FrameGate`, whose whole job is deciding what counts as *noise* without a
-neural network. It smooths signal power over ~10 ms and tracks a noise floor with
-minimum-statistics: when a frame is quieter than the current floor the estimate **snaps down**
-(5 % blend), and otherwise it **creeps up** very slowly (0.04 % per sample). Speech is loud and
-intermittent, so the floor keeps sliding down into the gaps and the speech is never absorbed into
-it. Each frame is then attenuated by its ratio to that floor — fully open at 4×, fully shut below
-1.5×, interpolated logarithmically in between, with a fast 3 ms attack and a slow 120 ms release so
-the opening and closing are inaudible.
 
 Everything is plain arithmetic — no WASM, no allocation per block. That is deliberate: it keeps the
 whole engine inside one file a human can read, and it means the preview and the final render cannot
 disagree.
 
+### The `rnnoise` engine is not a kernel
+
+RNNoise is a recurrent neural network, not a filter chain, so it does not live in `dsp.ts` at all.
+`src/lib/rnnoise.ts` drives Shiguredo's WebAssembly build (through
+`@sapphi-red/web-noise-suppressor`) in one of two ways:
+
+- **Batch:** an `OfflineAudioContext(1, frames, 48000)` with the RNNoise `AudioWorkletProcessor`
+  wired between a buffer source and the destination. `startRendering()` renders the whole file at
+  full speed on the audio thread, which is the cheapest correct way to run a 48 kHz framed network.
+- **Preview:** the same processor, the same wasm binary, live in the A/B graph.
+
+The frame scheduler in the processor is a delay line that hands RNNoise 480-sample frames and reads
+results back out, which costs a fixed **~11 ms of latency**. Frame counts are preserved exactly, so a
+muxed video track cannot drift; the shift is far below the threshold where it reads as out of sync.
+
 ### Resampling
 
 `resample()` has two paths, and the asymmetry is the point:
 
-- **Upsampling (16 → 48 kHz, the delivery path)** uses Catmull-Rom cubic interpolation. The source
-  has already been band-limited to 8 kHz by the extraction step, so there is nothing to alias
+- **Upsampling (16 → 48 kHz, the `webaudio` delivery path)** uses Catmull-Rom cubic interpolation. The
+  source has already been band-limited to 8 kHz by the 16 kHz chain, so there is nothing to alias
   against; a 32-tap sinc would be pure cost. On an hour-long file that is the difference between
-  seconds and hours.
+  seconds and hours. An MP3 (44.1 → 48 kHz for RNNoise) takes the same path: upsampling can only
+  add imaging, never aliasing.
 - **Downsampling** keeps a 16-tap windowed-sinc filter (Hann window, normalized weights), because
   that path *does* need the anti-aliasing.
 
 Output length is `Math.round(input.length × ratio)`, so frame counts stay exact — muxed audio must
 not drift against the video track it is joined to.
 
-## 3. Two pipelines, one DSP
+## 3. Two pipelines, one engine
 
-The same kernels run in three places, which is the core design idea:
-
-| | Where | Purpose |
-| --- | --- | --- |
-| **A** | `src/workers/enhance-worker.ts`, driven by `WorkerEngine` | Batch render, off the main thread, so the UI never freezes |
-| **B** | `public/worklets/hushwing-preview.js` | Real-time A/B monitoring while you listen |
-| fallback | `LocalEngine` on the main thread | When workers are blocked by the environment |
-
-All three implement one contract (`src/lib/engine.ts`):
+Every engine implements one contract (`src/lib/engine.ts`), whatever it runs on underneath:
 
 ```ts
 interface HushwingEngine {
@@ -150,40 +152,61 @@ interface HushwingEngine {
 }
 ```
 
+| Engine | Where the work happens | Purpose |
+| --- | --- | --- |
+| `webaudio` | `src/workers/enhance-worker.ts`, driven by `WorkerEngine` | Batch render, off the main thread, so the UI never freezes |
+| `webaudio` (fallback) | `LocalEngine` on the main thread | When workers are blocked by the environment |
+| `rnnoise` | An `OfflineAudioContext` on the audio rendering thread | Same contract, WebAssembly underneath |
+
 `WorkerEngine` posts the sample buffer with the buffer **transferred**, not copied, so a long file
-costs no extra memory on the way in or out. `createEngine()` prefers the worker and silently falls
-back to the main thread, so a hardened environment degrades instead of failing.
+costs no extra memory on the way in or out. `createEngine()` routes RNNoise to its own engine and
+everything else to the worker, falling back to the main thread, so a hardened environment degrades
+instead of failing.
 
 ### Pipeline B, and why the A/B switch is click-free
 
-`PreviewSession` (`src/lib/preview.ts`) builds this graph:
+`PreviewSession` (`src/lib/preview.ts`) builds the whole graph once and never rewires it:
 
 ```
-<audio> ─ createMediaElementSource ─► AudioWorkletNode('hushwing-preview') ─► AnalyserNode ─► destination
+                 ┌─ dry ─────────────────────┐
+  <audio> ───────┤                            │
+   (MediaElement │─ dsp worklet ─ dsp gain ───┼──► AnalyserNode ─► destination
+    Source)      └─ rnnoise ─── rnnoise gain ┘
 ```
 
-The worklet holds *both* profiles and a `bypass` flag. Switching A → B posts `{ type: 'bypass' }`
-and nothing else: the graph is never rebuilt, no node is reconnected, no buffer is reallocated. That
-is why the comparison does not click or gap — you are listening to one continuous signal path and
-flipping a boolean inside it. Changing the model posts `{ type: 'model' }` and resets the kernel
-state so the new profile starts clean.
+Each branch ends in a `GainNode`, and switching A → B only ramps two gains over 20 ms. Nothing is
+reconnected, nothing is reallocated, and the comparison never stops — which is why it does not click
+or gap. The "wet" branch is whichever engine is selected; `setModel()` creates the RNNoise node on
+demand (and says so in the panel if the browser will not host it), then just moves the gains again.
+
+The preview asks for `AudioContext({ sampleRate: 48000 })` rather than accepting the device rate,
+because the comparison happens against a 48 kHz delivery and RNNoise only runs at 48 kHz. A browser
+that ignores the hint still gets a working Web Audio preview, with an amber note explaining that the
+RNNoise audition is unavailable.
 
 Peaks are decoded once up front with an `OfflineAudioContext(1, 1, 48000)` used purely as a decoder,
 then downsampled to 320 buckets of max-abs values (`computePeaks`) for the waveform canvas. The level
 meter is RMS from the analyser's time-domain data, scaled by 3.2 and clamped — cheap, and it moves
 with the audio rather than with the styling.
 
-The worklet is **plain JavaScript, and mirrors `src/lib/dsp.ts` by hand**, because an `AudioWorklet`
-module is fetched outside the bundler and cannot import TypeScript. The constants are duplicated
-(`MIN_GAIN`, `OPEN_RATIO`, `CLOSED_RATIO`, …). If you change one file, change the other — the two
-pipelines drifting apart would mean the preview stops predicting the render, which is the only thing
-the preview is for. A test hook pins this behaviour: `[data-preview-mode="a"|"b"]`,
-`[data-preview-level]`, `[data-preview-position]`.
+The `webaudio` worklet is **plain JavaScript, and mirrors `src/lib/dsp.ts` by hand**, because an
+`AudioWorklet` module is fetched outside the bundler and cannot import TypeScript. The constants are
+duplicated (`HIGHPASS_HZ`, the compressor set, the limiter pair). If you change one file, change the
+other — the two pipelines drifting apart would mean the preview stops predicting the render, which is
+the only thing the preview is for. RNNoise has no such copy: batch and preview load the same wasm
+binary, so they cannot drift at all. A test hook pins the behaviour: `[data-preview-mode="a"|"b"]`,
+`[data-preview-level]`, `[data-preview-position]`, `[data-preview-model]`.
 
 ## 4. ffmpeg.wasm, and the traps in it
 
-`src/lib/ffmpeg.ts` wraps `@ffmpeg/ffmpeg` for exactly two operations: pull a 16 kHz mono WAV out of
-any input, and put enhanced audio back into a video without re-encoding the picture.
+`src/lib/ffmpeg.ts` wraps `@ffmpeg/ffmpeg` for exactly two operations: pull mono PCM at the engine's
+rate out of any input (`extractAudioToWav(input, name, sampleRate)`), and put enhanced audio back
+into a video without re-encoding the picture.
+
+**It is the fallback, not the front door.** `src/lib/decode.ts` handles WAV, MP3 and FLAC in plain
+JavaScript, so those formats never fetch the core — a queue of audio makes zero `ffmpeg-core`
+requests, which is verified by the suite rather than assumed. `App.tsx` only preloads the core when a
+queued file is a video or an extension no JavaScript decoder claims.
 
 **The core is single-threaded.** That means no `SharedArrayBuffer`, no cross-origin isolation
 requirement, and a binary that works on any static host. The COI service worker (§5) is for the
@@ -253,14 +276,19 @@ agent-drivable (contract in [`AGENTS.md`](./AGENTS.md) §4–§7):
 - `window.HushwingAPI` — `getModels()`, `processMedia()`, `queueMedia()`, `getJobs()`,
   `downloadDebugLog()`.
 - semantic `data-mcp-*` hooks on the real controls, plus `data-job-id` / `data-status` on job rows.
+- the wizard itself: `main[data-wizard-step]`, `[data-mcp-target="wizard-step"][data-step]`,
+  `[data-mcp-target="model-selector"][data-model-id]`, `[data-mcp-target="ab-preview"]`.
 - URL parameters `?model=`, `?autostart=true`, `?debug=true`, `?coi=off`. The studio is the only
   page, so the `#studio` hash older links use does nothing (harmlessly).
 - `public/mcp.json`, served at `/mcp.json`, so WebMCP clients can discover the tool surface at load.
 
 `e2e/hushwing.e2e.mjs` uses exactly this surface, which is why the suite is short enough to read and
-still covers the whole product: generated WAV, real H.264/AAC MP4, in-page VP8/Opus WebM, container
-and header assertions on every delivered result, the zip export, the worklet preview (ready, meter,
-playhead, A↔B, teardown), the URL parameters and the API.
+still covers the whole product: it walks the wizard (and asserts that step one is the *only* step on
+screen), auditions RNNoise live, then queues a generated WAV, a real H.264/AAC MP4, an MP3, a FLAC, an
+Ogg/Vorbis file and an in-page VP8/Opus WebM. Every delivered result is checked for container, rate
+and channels, and every job is checked for which decoder read it — `wav reader`, `mp3` and `flac`
+natively, `ffmpeg` for Vorbis and the videos. Then the zip export, the A/B panel, the URL parameters
+and the API.
 
 `e2e/hushwing.bulk.mjs` (`bun run test:bulk`) covers the queue instead of one file: 20+ files dropped
 at once, three more dropped mid-drain, and assertions on the invariants that matter at that size —
@@ -276,16 +304,21 @@ growth.
 | change how cleaning sounds | `src/lib/dsp.ts`, then mirror it in `public/worklets/hushwing-preview.js` |
 | work on containers or codecs | `src/lib/ffmpeg.ts` → `muxTargetFor()`, `listEncoders()` |
 | touch the preview or A/B | `src/lib/preview.ts` + `src/components/AbPreview.tsx` |
-| add an engine | `src/types/hushwing.ts`, `src/lib/models.ts`, `createKernel()`, both pipelines |
-| add UI or state | `src/store/app.ts` first — the queue is the source of truth |
+| work on decoding or formats | `src/lib/decode.ts` (native decoders), `src/lib/ffmpeg.ts` (everything else) |
+| add an engine | `src/types/hushwing.ts`, `src/lib/models.ts`, `createEngine()` in `src/lib/engine.ts`, then both pipelines |
+| add UI or state | `src/store/app.ts` first — the queue and the wizard step are the source of truth |
+| change the flow | `src/components/{Stepper,AddStep,EngineStep,RunStep}.tsx`, composed by `src/App.tsx` |
 | make it faster | the ffmpeg RAM buffer (§4), then code-splitting the 500 kB main bundle |
 
 ## 8. Known limits, and the honest state of the engines
 
-- **`rnnoise` is an id, not the RNNoise weights.** This build ships the adaptive gate above, and the
-  UI labels it that way. Vendoring the real WASM weights behind the same id is a drop-in follow-up —
-  the id is kept so the API and saved settings do not break when that lands.
+- **`rnnoise` is the real thing now.** Shiguredo's WASM build at 48 kHz, in both pipelines. The
+  earlier stand-in (an adaptive gate/expander behind the same id) is gone, not kept as a second
+  implementation — `createKernel('rnnoise')` throws, because reaching it means something asked the
+  wrong layer to render the model.
 - **DeepFilterNet 3 is not implemented.** The option renders disabled rather than pretending.
+- **RNNoise is 48 kHz or nothing.** A device that will not give the preview a 48 kHz context gets a
+  note and a Web Audio audition instead; the batch render is unaffected.
 - **Nothing but local files, on purpose.** Cloud import (Drive/OneDrive) and import-from-URL were
   removed: they added keys, OAuth setup and a first-run decision without improving the core loop of
   dropping files in and watching them clean up.

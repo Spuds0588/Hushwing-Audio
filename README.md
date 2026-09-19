@@ -20,13 +20,15 @@ backend, no quota and no telemetry.
 
 | Area | State |
 | --- | --- |
-| One page, and it is the studio — drop, engine, progress (Tailwind v4, Framer Motion) | ✅ |
-| Drag & drop, queue with per-job progress, stage labels, retry | ✅ |
-| Video → 16 kHz mono WAV, enhance, mux back into the source container | ✅ `ffmpeg.wasm` |
-| `webaudio` engine — high-pass → soft-knee compressor → soft limiter | ✅ |
-| `rnnoise` engine — adaptive noise-floor gate (id kept, weights are a follow-up) | ✅ |
-| Pipeline A: batch render in a Web Worker | ✅ |
-| Pipeline B: real-time A/B preview through an `AudioWorklet` | ✅ |
+| A three-step wizard — add files → pick an engine → watch the queue | ✅ |
+| Drag & drop with a review list, queue with per-job progress, stage labels, retry | ✅ |
+| `webaudio` engine — 16 kHz high-pass → expander → soft-knee compressor → soft limiter | ✅ |
+| `rnnoise` engine — real RNNoise WebAssembly at its native 48 kHz | ✅ |
+| Live A/B audition of the selected engine, straight from the engine step | ✅ |
+| WAV / MP3 / FLAC decoded in JavaScript — audio jobs never load ffmpeg | ✅ |
+| Video → 48 kHz mono WAV, enhance, mux back into the source container | ✅ `ffmpeg.wasm` |
+| Pipeline A: batch render off the main thread (worker, or the audio graph for RNNoise) | ✅ |
+| Pipeline B: real-time preview through an `AudioWorklet` graph | ✅ |
 | OPFS staging + streamed results, `.zip` batch export | ✅ |
 | `window.HushwingAPI`, semantic DOM hooks, URL params, `mcp.json` | ✅ |
 | No format control to get wrong — video stays video, audio becomes 48 kHz WAV | ✅ |
@@ -46,8 +48,9 @@ bun install
 bun run dev          # http://localhost:5173 — the studio is the whole app
 ```
 
-The first load pulls a ~32 MB `ffmpeg.wasm` core. It is only fetched when there is actually work
-to do (see `preloadFFmpeg`), and the browser caches it afterwards.
+A queue of MP3, WAV or FLAC never downloads `ffmpeg.wasm`: those are decoded in JavaScript, and the
+~32 MB core is fetched only when a queued file actually needs it (a video, M4A/AAC or Ogg/Vorbis).
+See `preloadFFmpeg` and `src/lib/decode.ts`.
 
 ## Scripts
 
@@ -59,37 +62,41 @@ to do (see `preloadFFmpeg`), and the browser caches it afterwards.
 | `bun run typecheck` | `tsc -b --noEmit`. Must be clean |
 | `bun run lint` | `oxlint` |
 | `bun run preview` | Serve the built `dist/` locally |
-| `bun run test:e2e` | The browser suite — one audio job, two video jobs, the preview (below) |
+| `bun run test:e2e` | The browser suite — the wizard, five formats, the preview (below) |
 | `bun run test:bulk` | The bulk/queue suite — 20+ files in one drop, plus mid-run arrivals |
 
 ## Project layout
 
 ```
 index.html ─ coi-serviceworker → cross-origin isolation
-  └── src/App.tsx ──────── the studio: dropzone, batch status, queue, API install
-        ├── store/app.ts ......... zustand queue — the single source of truth
-        ├── lib/dsp.ts ........... DSP kernels: high-pass, gate, compressor, limiter, resample
-        ├── lib/engine.ts ........ HushwingEngine contract; worker engine + main-thread fallback
-        ├── lib/ffmpeg.ts ........ core loading/probing, 16 kHz extraction, video mux
+  └── src/App.tsx ──────── the studio shell: step routing, queue wiring, API install
+        ├── store/app.ts ......... zustand queue + wizard step — the single source of truth
+        ├── lib/dsp.ts ........... `webaudio` kernels: high-pass, compressor, limiter, resample
+        ├── lib/rnnoise.ts ....... RNNoise WebAssembly: batch render + live preview node
+        ├── lib/decode.ts ........ WAV / MP3 / FLAC decoders (lazy) with ffmpeg as the fallback
+        ├── lib/engine.ts ........ HushwingEngine contract; worker, main-thread and RNNoise engines
+        ├── lib/ffmpeg.ts ........ core loading/probing, mono extraction, video mux
         ├── lib/filekit.ts ....... WAV parse/encode, format tables, blob URLs
         ├── lib/opfs.ts .......... streaming OPFS writer/reader
-        ├── lib/pipeline.ts ...... stage → extract → enhance → resample → stream → mux
+        ├── lib/pipeline.ts ...... stage → decode → enhance → stream → mux
         ├── lib/preview.ts ....... Pipeline B session (peaks, worklet graph, A/B, meter)
         ├── lib/hushwing-api.ts .. window.HushwingAPI
         ├── lib/{models,batch,logger}.ts
-        ├── components/ .......... Header, UploadZone, JobQueue, DebugLog, AbPreview,
-        │                          ui primitives
-        └── workers/enhance-worker.ts     Pipeline A
+        ├── components/ .......... Header, Stepper, AddStep, EngineStep, RunStep, JobQueue,
+        │                          DebugLog, AbPreview, ui primitives
+        └── workers/enhance-worker.ts     Pipeline A (the `webaudio` engine)
 public/
-  ├── worklets/hushwing-preview.js   Pipeline B processor — plain JS mirror of lib/dsp.ts
+  ├── worklets/hushwing-preview.js   Pipeline B processor — plain JS mirror of the `webaudio` chain
   ├── coi-serviceworker.js           COOP/COEP injection for SharedArrayBuffer
   └── mcp.json                       WebMCP discovery document, served at /mcp.json
 e2e/hushwing.e2e.mjs                 the browser suite
 ```
 
-`src/lib/dsp.ts` is the single source of truth for the DSP. `public/worklets/hushwing-preview.js`
-is a hand-maintained plain-JS copy, because an `AudioWorklet` module is loaded outside the bundler
-and cannot import TypeScript. **Change both together** — that is item 3 of `AGENTS.md` §3.
+`src/lib/dsp.ts` is the single source of truth for the `webaudio` chain.
+`public/worklets/hushwing-preview.js` is a hand-maintained plain-JS copy, because an `AudioWorklet`
+module is loaded outside the bundler and cannot import TypeScript. **Change both together** — that
+is item 3 of `AGENTS.md` §3. RNNoise has no copy to drift from: batch and preview load the same
+wasm binary.
 
 ## Testing
 
@@ -103,12 +110,20 @@ HEADED=1 E2E_SCREENSHOT=/tmp/studio.png \
 
 `e2e/hushwing.e2e.mjs` drives real Chromium and asserts on the *delivered bytes*, not on the UI:
 
-1. queues a generated 16 kHz WAV, a real H.264/AAC MP4 and a VP8/Opus WebM recorded in-page;
-2. checks every result's container and header (RIFF/fmt, Matroska magic `1a45dfa3`, MP4 `ftyp`);
-3. exports the `.zip` and verifies the `PK` header;
-4. runs the A/B preview — worklet ready, level meter moving, playhead advancing, A↔B switching,
-   graph teardown;
-5. exercises `?model=`, `?debug=`, the semantic DOM hooks and `window.HushwingAPI`.
+1. proves step one is the only step on screen (no engine cards, queue or progress yet), then drops a
+   generated 16 kHz WAV and follows the wizard to the engine step;
+2. auditions the selected engine live — worklet ready, level meter moving, playhead advancing,
+   A↔B switching, teardown — with no "preview unavailable" caveat;
+3. queues a real H.264/AAC MP4, an MP3, a FLAC, an Ogg/Vorbis file and a VP8/Opus WebM recorded
+   in-page, all through the `rnnoise` engine;
+4. asserts which decoder read each file (`wav reader`, `mp3`, `flac`, `ffmpeg`) and checks every
+   result's container, rate and channel count (RIFF/fmt at 48 kHz mono, Matroska `1a45dfa3`,
+   MP4 `ftyp`);
+5. exports the `.zip` and verifies the `PK` header;
+6. exercises `?model=`, `?debug=`, the semantic DOM hooks and `window.HushwingAPI`.
+
+A run covers both engines between the two suites: this one drives RNNoise (the WebAssembly path,
+including its per-job `OfflineAudioContext`) and the bulk suite runs the JS chain.
 
 When a job fails it dumps the app's own diagnostic log, which is the fastest route to the cause.
 Point `PREVIEW_URL` at the dev preview or at the live site — both are supported (the dev-only
@@ -119,14 +134,16 @@ change to the pipeline, an engine or the preview.
 
 ```bash
 PREVIEW_URL=https://<host> bun run test:bulk                   # 20 audio files + 1 video + 3 late arrivals
-BULK_COUNT=50 BULK_VIDEO=0 PREVIEW_URL=https://<host> bun run test:bulk   # bigger, audio-only
+PREVIEW_URL=https://<host> BULK_MODEL=rnnoise bun run test:bulk            # the WebAssembly engine
+BULK_COUNT=50 BULK_VIDEO=0 PREVIEW_URL=https://<host> bun run test:bulk    # bigger, audio-only
 ```
 
 `e2e/hushwing.bulk.mjs` covers the part that has to hold up when someone drops a folder on it:
 
 1. one multi-file drop through `?autostart=true` queues and drains every file without a click;
 2. **concurrency never exceeds 1** and per-job progress never goes backwards;
-3. files dropped *while the batch is draining* are picked up, not stranded at `queued`;
+3. files added *while the batch is draining* (through the wizard's "Add more files") are picked up,
+   not stranded at `queued`, and land back on the running batch;
 4. OPFS hygiene: `uploads/` is empty afterwards (each staging copy is deleted in the job's
    `finally`) and `outputs/` holds exactly one result per job;
 5. every result follows its own source — in a mixed batch the audio files come back as WAV and the
@@ -209,7 +226,9 @@ depends on it being there.
   pending worker calls on dispose.
 - **The worker reports failures as plain strings**, not `Error`s. `describeError()` in
   `lib/ffmpeg.ts` exists because a naive `instanceof Error` check threw away the only useful detail.
-- **Cloud pickers must never write back.** Import goes cloud → OPFS only; results stay local.
+- **The wizard step is derived from the queue, not from clicks alone.** `enqueue()` moves you to the
+  engine step, `runQueue()` moves you to the queue, and adding a file while a batch runs keeps you on
+  the queue. A step that cannot act on the current state renders disabled instead of vanishing.
 
 ## Headless / agent surface
 
@@ -217,23 +236,29 @@ depends on it being there.
 await window.HushwingAPI.getModels()            // ['webaudio', 'rnnoise'] — only what really runs
 await window.HushwingAPI.processMedia({ file, model: 'webaudio' })  // → Blob, container follows the source
 await window.HushwingAPI.queueMedia({ file })   // → job id
-window.HushwingAPI.getJobs()                    // id, status, name, progress, stage, resultUrl, error
+window.HushwingAPI.getJobs()                    // id, status, name, progress, stage, resultUrl,
+                                                // error, warning, decoder
 window.HushwingAPI.downloadDebugLog()
 ```
 
 | Selector | Purpose |
 | --- | --- |
-| `input[data-mcp-action="upload"]` | Hidden file input — agents set `.files` and dispatch `change` |
-| `select[data-mcp-target="model-selector"]` | `webaudio` \| `rnnoise` |
+| `main[data-wizard-step="add|engine|run"]` | Which step is on screen |
+| `[data-mcp-target="wizard-step"][data-step="<id>"]` | Step tab (`data-state`: current/done/later) |
+| `input[data-mcp-action="upload"]` | Hidden file input, step 1 — agents set `.files` and dispatch `change` |
+| `[data-mcp-target="model-selector"][data-model-id="webaudio|rnnoise"]` | Engine card, step 2 |
+| `[data-mcp-target="ab-preview"]` | Live A/B audition (`data-preview-model`) |
 | `button[data-mcp-action="process-queue"]` | Process every queued job |
 | `a[data-mcp-action="download-result"][data-job-id="<uuid>"]` | Result download link |
+| `button[data-mcp-action="export-zip"]` | Download every finished result as a zip |
 | `[data-mcp-target="diagnostics"]` | Diagnostics panel (present only while the log is open) |
 
-Job rows poll cleanly: `<li data-job-id="<uuid>" data-status="queued|preparing|processing|completed|error" data-job-name="interview.wav">`.
+Job rows poll cleanly: `<li data-job-id="<uuid>" data-status="queued|preparing|processing|completed|error"
+data-job-name="voiceover.mp3" data-job-model="rnnoise" data-job-decoder="mp3">`.
 
-URL parameters: `?model=rnnoise`, `?autostart=true`, `?debug=true`, `?coi=off`; the hash `#studio`
-opens the dashboard directly. Full contract in [`AGENTS.md`](./AGENTS.md) §4–§7; discovery document
-[`public/mcp.json`](./public/mcp.json), served at `/mcp.json`.
+URL parameters: `?model=rnnoise`, `?autostart=true`, `?debug=true`, `?coi=off`. Full contract in
+[`AGENTS.md`](./AGENTS.md) §4–§7; discovery document [`public/mcp.json`](./public/mcp.json), served
+at `/mcp.json`.
 
 ## Conventions
 
@@ -248,10 +273,17 @@ server state, so do not add a data-fetching layer.
 ## Known limitations
 
 - `@ffmpeg/ffmpeg` 0.12 cannot mount OPFS, so the input passes through the WASM filesystem (RAM)
-  during the ffmpeg step. Everything before and after it streams through OPFS. Expect the first
-  load to be dominated by the 32 MB core download.
-- The `rnnoise` id is kept for API compatibility, but this build ships an adaptive gate/expander
-  DSP profile, not the RNNoise WASM weights. The UI says so.
+  during the ffmpeg step. Everything before and after it streams through OPFS. That step only
+  happens for video, M4A/AAC and Ogg/Vorbis — WAV, MP3 and FLAC never touch it.
+- RNNoise only runs at 48 kHz and adds a fixed ~11 ms of latency from its frame scheduler. That is
+  below the threshold where it reads as out of sync with picture, and the mux keeps frame counts
+  exact, so audio cannot drift across a long video.
+- The live RNNoise preview needs a 48 kHz audio device (`AudioContext({ sampleRate: 48000 })` asks
+  for one). Where the browser refuses, the panel says so and auditions the Web Audio chain instead;
+  the batch render still uses RNNoise.
+- The `webaudio` chain runs at 16 kHz, because the band limit is part of what removes wideband hiss,
+  while the preview runs at 48 kHz. The preview is therefore a little brighter than the delivered
+  WAV. RNNoise is 48 kHz on both sides.
 - The A/B preview has not been verified on a physical iOS device, where Safari interrupts
   `AudioWorklet` differently.
 
