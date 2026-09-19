@@ -1,0 +1,88 @@
+{
+  "name": "hushwing-audio",
+  "version": "1.0.0",
+  "title": "Hushwing Audio",
+  "description": "Private, client-side voice isolation for audio and video. Enhances media locally with WebAssembly and Web Audio; nothing is uploaded.",
+  "transport": "browser",
+  "entry": "./index.html",
+  "privacy": "No network calls are made with your media. Processing happens in the page.",
+  "tools": [
+    {
+      "name": "getModels",
+      "description": "List the enhancement models that are actually implemented in this build.",
+      "invoke": "window.HushwingAPI.getModels()",
+      "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+      "returns": {
+        "type": "array",
+        "items": { "type": "string", "enum": ["webaudio", "rnnoise"] }
+      }
+    },
+    {
+      "name": "processMedia",
+      "description": "Queue one file, process it, and resolve with the enhanced media blob.",
+      "invoke": "window.HushwingAPI.processMedia({ file, model, outputFormat })",
+      "inputSchema": {
+        "type": "object",
+        "required": ["file"],
+        "properties": {
+          "file": { "type": "string", "description": "File or Blob to enhance" },
+          "model": { "type": "string", "enum": ["webaudio", "rnnoise"], "default": "webaudio" },
+          "outputFormat": { "type": "string", "enum": ["wav", "video"], "default": "wav" }
+        }
+      },
+      "returns": { "type": "string", "description": "Enhanced media blob" }
+    },
+    {
+      "name": "queueMedia",
+      "description": "Add a file to the queue without waiting for the result.",
+      "invoke": "window.HushwingAPI.queueMedia({ file, model, outputFormat })",
+      "returns": { "type": "string", "description": "Job id (uuid)" }
+    },
+    {
+      "name": "getJobs",
+      "description": "Read the current queue: id, status, progress, stage, result URL and any error.",
+      "invoke": "window.HushwingAPI.getJobs()",
+      "returns": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": { "type": "string" },
+            "status": { "type": "string", "enum": ["queued", "preparing", "processing", "completed", "error"] },
+            "name": { "type": "string" },
+            "progress": { "type": "number" },
+            "stage": { "type": "string" },
+            "resultUrl": { "type": "string" },
+            "error": { "type": "string" }
+          }
+        }
+      }
+    },
+    {
+      "name": "downloadDebugLog",
+      "description": "Download the rolling diagnostic log as a .txt file.",
+      "invoke": "window.HushwingAPI.downloadDebugLog()"
+    }
+  ],
+  "domHooks": {
+    "upload": "input[data-mcp-action=\"upload\"]",
+    "modelSelector": "select[data-mcp-target=\"model-selector\"]",
+    "outputFormat": "select[data-mcp-target=\"output-format\"]",
+    "processQueue": "button[data-mcp-action=\"process-queue\"]",
+    "downloadResult": "a[data-mcp-action=\"download-result\"][data-job-id=\"<uuid>\"]",
+    "jobRow": "div[data-job-id=\"<uuid>\"][data-status=\"queued|preparing|processing|completed|error\"]"
+  },
+  "urlParameters": {
+    "model": "webaudio | rnnoise — pre-selects a model (?model=rnnoise)",
+    "autostart": "true — begins processing as soon as files are added (?autostart=true)",
+    "debug": "true — opens the diagnostics log (?debug=true)",
+    "coi": "off — disables the cross-origin isolation service worker (?coi=off)"
+  },
+  "capabilities": {
+    "audio": ["wav", "mp3", "m4a", "flac", "ogg"],
+    "video": ["mp4", "mov", "mkv", "webm", "avi"],
+    "storage": "Origin Private File System",
+    "acceptedModelsForV1": ["webaudio", "rnnoise"],
+    "planned": ["deepfilternet"]
+  }
+}

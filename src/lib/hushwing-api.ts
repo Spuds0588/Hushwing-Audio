@@ -1,0 +1,93 @@
+import { processFile } from './pipeline'
+import { availableModelIds, isModelId } from './models'
+import { downloadLogs } from './logger'
+import { useAppStore } from '../store/app'
+import { isActive } from './pipeline'
+import type { ModelId, OutputFormat } from '../types/hushwing'
+
+export interface ProcessMediaOptions {
+  file: File | Blob
+  model?: ModelId
+  outputFormat?: OutputFormat
+}
+
+export interface HushwingAPI {
+  /** Models that are actually implemented in this build. */
+  getModels(): Promise<ModelId[]>
+  /** Clean one file and resolve with the enhanced media. */
+  processMedia(options: ProcessMediaOptions): Promise<Blob>
+  /** Queue one file without awaiting the result. Returns the job id. */
+  queueMedia(options: ProcessMediaOptions): Promise<string>
+  /** Snapshot of the current queue, for agents that poll. */
+  getJobs(): {
+    id: string
+    status: string
+    name: string
+    progress: number
+    stage?: string
+    resultUrl?: string
+    error?: string
+  }[]
+  /** Download the rolling diagnostic log as a .txt file. */
+  downloadDebugLog(): void
+}
+
+declare global {
+  interface Window {
+    HushwingAPI: HushwingAPI
+  }
+}
+
+const api: HushwingAPI = {
+  async getModels() {
+    return availableModelIds()
+  },
+
+  async processMedia({ file, model = 'webaudio', outputFormat = 'wav' }) {
+    const job = await processFile(file, model, outputFormat)
+
+    if (job.status !== 'completed' || !job.resultUrl) {
+      throw new Error(job.error ?? `Job ${job.id} did not complete`)
+    }
+
+    const response = await fetch(job.resultUrl)
+    if (!response.ok) {
+      throw new Error(`Could not read the result (HTTP ${response.status})`)
+    }
+    return response.blob()
+  },
+
+  async queueMedia({ file, model = 'webaudio', outputFormat = 'wav' }) {
+    const store = useAppStore.getState()
+    const job = store.enqueue(file, model, outputFormat)
+    return job.id
+  },
+
+  getJobs() {
+    return useAppStore.getState().jobs.map((job) => ({
+      id: job.id,
+      status: job.status,
+      name: job.sourceName,
+      progress: job.progress,
+      stage: job.stage,
+      resultUrl: job.resultUrl,
+      error: job.error,
+    }))
+  },
+
+  downloadDebugLog() {
+    downloadLogs()
+  },
+}
+
+export function installHushwingAPI(): HushwingAPI {
+  window.HushwingAPI = api
+  return api
+}
+
+/** Guard used when a caller passes a model string straight from a URL or the console. */
+export function coerceModel(value: string | null | undefined, fallback: ModelId = 'webaudio'): ModelId {
+  return value && isModelId(value) ? value : fallback
+}
+
+export { isActive }

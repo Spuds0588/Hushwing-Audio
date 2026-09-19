@@ -1,0 +1,32 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# e2e fixture cache
+e2e/.cache
+
+# ffmpeg.wasm core. Never committed (32 MB); the build copies it out of
+# node_modules into dist/ffmpeg-core, and the runtime falls back to a CDN when a
+# local copy is absent, so a fresh clone still works without it.
+public/ffmpeg-core
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

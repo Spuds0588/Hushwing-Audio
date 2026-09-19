@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="theme-color" content="#0b0d12" />
+    <meta
+      name="description"
+      content="Hushwing Audio — private, client-side voice isolation for audio and video. Runs ffmpeg.wasm and Web Audio entirely in your browser; nothing is uploaded."
+    />
+    <meta name="color-scheme" content="dark" />
+    <title>Hushwing Audio — private voice isolation in your browser</title>
+
+    <!--
+      Cross-origin isolation (PRD §2.1).
+
+      `coi-serviceworker` injects COOP: same-origin + COEP: credentialless so
+      SharedArrayBuffer becomes available on static hosts such as GitHub Pages,
+      which cannot set response headers themselves. Credentialless (rather than
+      require-corp) is what keeps the Google / OneDrive picker iframes usable.
+
+      The script only registers in a top-level window, so it is inert inside the
+      sandboxed preview frame, and `?coi=off` disables it entirely.
+    -->
+    <script>
+      window.coi = {
+        quiet: true,
+        shouldRegister: function () {
+          var params = new URLSearchParams(window.location.search)
+          return window.parent === window && params.get('coi') !== 'off'
+        },
+        coepCredentialless: function () {
+          return true
+        },
+      }
+    </script>
+    <script src="/coi-serviceworker.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>
+      Hushwing Audio processes media with WebAssembly inside the browser, so JavaScript is required.
+    </noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
