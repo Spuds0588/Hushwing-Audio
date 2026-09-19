@@ -1,4 +1,4 @@
-# Hushwing Audio
+# Hushwing
 
 ### ▶ **[Try it now — spuds0588.github.io/Hushwing-Audio](https://spuds0588.github.io/Hushwing-Audio/)**
 
@@ -24,11 +24,10 @@ backend, no quota and no telemetry.
 | Drag & drop with a review list, queue with per-job progress, stage labels, retry | ✅ |
 | `webaudio` engine — 16 kHz high-pass → expander → soft-knee compressor → soft limiter | ✅ |
 | `rnnoise` engine — real RNNoise WebAssembly at its native 48 kHz | ✅ |
-| Live A/B audition of the selected engine, straight from the engine step | ✅ |
-| WAV / MP3 / FLAC decoded in JavaScript — audio jobs never load ffmpeg | ✅ |
-| Video → 48 kHz mono WAV, enhance, mux back into the source container | ✅ `ffmpeg.wasm` |
-| Pipeline A: batch render off the main thread (worker, or the audio graph for RNNoise) | ✅ |
-| Pipeline B: real-time preview through an `AudioWorklet` graph | ✅ |
+| WAV · MP3 · M4A/AAC · FLAC · Ogg/Vorbis · Opus decoded natively — no ffmpeg needed | ✅ `mediabunny` |
+| Video → 48 kHz mono WAV, enhance, mux back into a container that fits the picture | ✅ `ffmpeg.wasm` |
+| Batch render off the main thread (worker, or the audio graph for RNNoise) | ✅ |
+| Failures a person can act on ("this file has no audio track") instead of exit codes | ✅ |
 | OPFS staging + streamed results, `.zip` batch export | ✅ |
 | `window.HushwingAPI`, semantic DOM hooks, URL params, `mcp.json` | ✅ |
 | No format control to get wrong — video stays video, audio becomes 48 kHz WAV | ✅ |
@@ -48,9 +47,10 @@ bun install
 bun run dev          # http://localhost:5173 — the studio is the whole app
 ```
 
-A queue of MP3, WAV or FLAC never downloads `ffmpeg.wasm`: those are decoded in JavaScript, and the
-~32 MB core is fetched only when a queued file actually needs it (a video, M4A/AAC or Ogg/Vorbis).
-See `preloadFFmpeg` and `src/lib/decode.ts`.
+A queue of WAV, MP3, M4A/AAC, FLAC, Ogg/Vorbis or Opus never downloads `ffmpeg.wasm`: WAV is parsed
+in JavaScript and everything else goes through `mediabunny`, using the browser's own codecs. The
+~32 MB core is fetched only for work that needs it — muxing a video, or opening a container
+`mediabunny` cannot read (AVI, WMV, FLV). See `preloadFFmpeg` and `src/lib/decode.ts`.
 
 ## Scripts
 
@@ -62,7 +62,7 @@ See `preloadFFmpeg` and `src/lib/decode.ts`.
 | `bun run typecheck` | `tsc -b --noEmit`. Must be clean |
 | `bun run lint` | `oxlint` |
 | `bun run preview` | Serve the built `dist/` locally |
-| `bun run test:e2e` | The browser suite — the wizard, five formats, the preview (below) |
+| `bun run test:e2e` | The browser suite — the wizard, seven formats, byte-level result checks (below) |
 | `bun run test:bulk` | The bulk/queue suite — 20+ files in one drop, plus mid-run arrivals |
 
 ## Project layout
@@ -72,31 +72,27 @@ index.html ─ coi-serviceworker → cross-origin isolation
   └── src/App.tsx ──────── the studio shell: step routing, queue wiring, API install
         ├── store/app.ts ......... zustand queue + wizard step — the single source of truth
         ├── lib/dsp.ts ........... `webaudio` kernels: high-pass, compressor, limiter, resample
-        ├── lib/rnnoise.ts ....... RNNoise WebAssembly: batch render + live preview node
-        ├── lib/decode.ts ........ WAV / MP3 / FLAC decoders (lazy) with ffmpeg as the fallback
+        ├── lib/rnnoise.ts ....... RNNoise WebAssembly, rendered through an offline audio graph
+        ├── lib/decode.ts ........ WAV parser + `mediabunny` reader (lazy), ffmpeg as fallback
         ├── lib/engine.ts ........ HushwingEngine contract; worker, main-thread and RNNoise engines
         ├── lib/ffmpeg.ts ........ core loading/probing, mono extraction, video mux
         ├── lib/filekit.ts ....... WAV parse/encode, format tables, blob URLs
         ├── lib/opfs.ts .......... streaming OPFS writer/reader
         ├── lib/pipeline.ts ...... stage → decode → enhance → stream → mux
-        ├── lib/preview.ts ....... Pipeline B session (peaks, worklet graph, A/B, meter)
         ├── lib/hushwing-api.ts .. window.HushwingAPI
         ├── lib/{models,batch,logger}.ts
         ├── components/ .......... Header, Stepper, AddStep, EngineStep, RunStep, JobQueue,
-        │                          DebugLog, AbPreview, ui primitives
-        └── workers/enhance-worker.ts     Pipeline A (the `webaudio` engine)
+        │                          DebugLog, ui primitives
+        └── workers/enhance-worker.ts     the `webaudio` engine, off the main thread
 public/
-  ├── worklets/hushwing-preview.js   Pipeline B processor — plain JS mirror of the `webaudio` chain
   ├── coi-serviceworker.js           COOP/COEP injection for SharedArrayBuffer
   └── mcp.json                       WebMCP discovery document, served at /mcp.json
 e2e/hushwing.e2e.mjs                 the browser suite
 ```
 
-`src/lib/dsp.ts` is the single source of truth for the `webaudio` chain.
-`public/worklets/hushwing-preview.js` is a hand-maintained plain-JS copy, because an `AudioWorklet`
-module is loaded outside the bundler and cannot import TypeScript. **Change both together** — that
-is item 3 of `AGENTS.md` §3. RNNoise has no copy to drift from: batch and preview load the same
-wasm binary.
+`src/lib/dsp.ts` is the single source of truth for the `webaudio` chain, and there is no second copy
+of it: the real-time `AudioWorklet` preview was removed (it could not match the delivered file) and
+RNNoise has exactly one code path, `renderWithRnnoise`, driven through an `OfflineAudioContext`.
 
 ## Testing
 
@@ -112,15 +108,18 @@ HEADED=1 E2E_SCREENSHOT=/tmp/studio.png \
 
 1. proves step one is the only step on screen (no engine cards, queue or progress yet), then drops a
    generated 16 kHz WAV and follows the wizard to the engine step;
-2. auditions the selected engine live — worklet ready, level meter moving, playhead advancing,
-   A↔B switching, teardown — with no "preview unavailable" caveat;
-3. queues a real H.264/AAC MP4, an MP3, a FLAC, an Ogg/Vorbis file and a VP8/Opus WebM recorded
-   in-page, all through the `rnnoise` engine;
-4. asserts which decoder read each file (`wav reader`, `mp3`, `flac`, `ffmpeg`) and checks every
-   result's container, rate and channel count (RIFF/fmt at 48 kHz mono, Matroska `1a45dfa3`,
-   MP4 `ftyp`);
-5. exports the `.zip` and verifies the `PK` header;
-6. exercises `?model=`, `?debug=`, the semantic DOM hooks and `window.HushwingAPI`.
+2. asserts the removed preview UI and its worklet chunk stay gone;
+3. queues a real H.264/AAC MP4, an MP3, a FLAC, an Ogg/Vorbis file, an M4A/AAC file, an AVI and a
+   VP8/Opus WebM recorded in-page, all through the `rnnoise` engine;
+4. asserts which decoder read each file — `wav reader` for WAV, `mediabunny` for MP3/FLAC/Ogg/M4A
+   and for the audio inside MP4/WebM, `ffmpeg` only for AVI — and checks every result's container,
+   rate and channel count (RIFF/fmt at 48 kHz mono, Matroska `1a45dfa3`, MP4 `ftyp`, AVI
+   `RIFF`+`AVI `);
+5. audits that an audio-only queue fetches the ffmpeg core **zero** times, in a fresh browser
+   context so the cache cannot flatter it;
+6. checks a video with no audio track fails with a sentence rather than an exit code;
+7. exports the `.zip` and verifies the `PK` header;
+8. exercises `?model=`, `?debug=`, the semantic DOM hooks and `window.HushwingAPI`.
 
 A run covers both engines between the two suites: this one drives RNNoise (the WebAssembly path,
 including its per-job `OfflineAudioContext`) and the bulk suite runs the JS chain.
@@ -128,7 +127,7 @@ including its per-job `OfflineAudioContext`) and the bulk suite runs the JS chai
 When a job fails it dumps the app's own diagnostic log, which is the fastest route to the cause.
 Point `PREVIEW_URL` at the dev preview or at the live site — both are supported (the dev-only
 diagnostics import degrades to a note in production). A green run is required before shipping a
-change to the pipeline, an engine or the preview.
+change to the pipeline or an engine.
 
 ### Bulk and queued workloads
 
@@ -169,8 +168,8 @@ The build is static and uses `base: './'`, so one artifact works at a domain roo
 every push to `main`. **Settings → Pages → Source must be "GitHub Actions"** — if it is left on
 "Deploy from a branch", the legacy Jekyll pipeline republishes the raw repository root on each push
 and silently overrides the deployed artifact (the site then serves `/src/main.tsx` and 404s on
-`/mcp.json`, `/worklets/…` and `/ffmpeg-core/…`). `public/.nojekyll` keeps `assets/` from being
-filtered if that ever happens.
+`/mcp.json` and `/ffmpeg-core/…`). `public/.nojekyll` keeps `assets/` from being filtered if that
+ever happens.
 
 Static hosting cannot send `COOP`/`COEP` headers, so `public/coi-serviceworker.js` injects
 `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: credentialless`
@@ -247,14 +246,13 @@ window.HushwingAPI.downloadDebugLog()
 | `[data-mcp-target="wizard-step"][data-step="<id>"]` | Step tab (`data-state`: current/done/later) |
 | `input[data-mcp-action="upload"]` | Hidden file input, step 1 — agents set `.files` and dispatch `change` |
 | `[data-mcp-target="model-selector"][data-model-id="webaudio|rnnoise"]` | Engine card, step 2 |
-| `[data-mcp-target="ab-preview"]` | Live A/B audition (`data-preview-model`) |
 | `button[data-mcp-action="process-queue"]` | Process every queued job |
 | `a[data-mcp-action="download-result"][data-job-id="<uuid>"]` | Result download link |
 | `button[data-mcp-action="export-zip"]` | Download every finished result as a zip |
 | `[data-mcp-target="diagnostics"]` | Diagnostics panel (present only while the log is open) |
 
 Job rows poll cleanly: `<li data-job-id="<uuid>" data-status="queued|preparing|processing|completed|error"
-data-job-name="voiceover.mp3" data-job-model="rnnoise" data-job-decoder="mp3">`.
+data-job-name="voiceover.mp3" data-job-model="rnnoise" data-job-decoder="mediabunny">`.
 
 URL parameters: `?model=rnnoise`, `?autostart=true`, `?debug=true`, `?coi=off`. Full contract in
 [`AGENTS.md`](./AGENTS.md) §4–§7; discovery document [`public/mcp.json`](./public/mcp.json), served
@@ -273,19 +271,24 @@ server state, so do not add a data-fetching layer.
 ## Known limitations
 
 - `@ffmpeg/ffmpeg` 0.12 cannot mount OPFS, so the input passes through the WASM filesystem (RAM)
-  during the ffmpeg step. Everything before and after it streams through OPFS. That step only
-  happens for video, M4A/AAC and Ogg/Vorbis — WAV, MP3 and FLAC never touch it.
+  during the ffmpeg step. Everything before and after it streams through OPFS. That step now only
+  happens for video muxing and for containers `mediabunny` cannot open (AVI, WMV, FLV) — WAV, MP3,
+  M4A/AAC, FLAC, Ogg/Vorbis and Opus are decoded natively.
+- Video still needs the 32 MB core, for the mux. Removing it would mean writing the container
+  ourselves; the researched path is in `todo.md` §3.
+- `mediabunny` decodes with the browser's own codecs, so a browser lacking WebCodecs support for a
+  format falls back to ffmpeg rather than failing.
 - RNNoise only runs at 48 kHz and adds a fixed ~11 ms of latency from its frame scheduler. That is
   below the threshold where it reads as out of sync with picture, and the mux keeps frame counts
   exact, so audio cannot drift across a long video.
-- The live RNNoise preview needs a 48 kHz audio device (`AudioContext({ sampleRate: 48000 })` asks
-  for one). Where the browser refuses, the panel says so and auditions the Web Audio chain instead;
-  the batch render still uses RNNoise.
-- The `webaudio` chain runs at 16 kHz, because the band limit is part of what removes wideband hiss,
-  while the preview runs at 48 kHz. The preview is therefore a little brighter than the delivered
-  WAV. RNNoise is 48 kHz on both sides.
-- The A/B preview has not been verified on a physical iOS device, where Safari interrupts
-  `AudioWorklet` differently.
+- The `webaudio` chain runs at 16 kHz, because the band limit is part of what removes wideband hiss.
+  RNNoise is 48 kHz, and everything is delivered at 48 kHz.
+- There is no in-app preview. The live `AudioWorklet` audition could not match the delivered file
+  (it ran at 48 kHz against a 16 kHz chain), and a preview that disagrees with the output is worse
+  than none, so it was removed rather than patched. Judge a result by processing it — the queue
+  reports progress and the finished file downloads.
+- Verified in Chromium only (headless, and headed under Xvfb). A physical Android/iOS pass over a
+  long recording is still on the list.
 
 ## Licence
 

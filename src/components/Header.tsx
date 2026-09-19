@@ -27,6 +27,8 @@ export function Header({ onToggleLog }: HeaderProps) {
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-[var(--color-surface-0)]/85 backdrop-blur">
       <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
+        {/* The mark is a placeholder until the branded wordmark logo lands; the
+            product name is Hushwing, the repository is Hushwing-Audio. */}
         <div className="flex items-center gap-2.5">
           <svg
             width="28"
@@ -45,7 +47,7 @@ export function Header({ onToggleLog }: HeaderProps) {
           </svg>
           <span>
             <span className="block text-base leading-tight font-semibold tracking-tight">
-              Hushwing Audio
+              Hushwing
             </span>
             <span className="block text-[11px] leading-tight text-[var(--color-ink-muted)]">
               local voice isolation · no uploads

@@ -1,6 +1,5 @@
 import type { Job } from '../types/hushwing'
 import { useAppStore } from '../store/app'
-import { AbPreview } from './AbPreview'
 import { JobQueue } from './JobQueue'
 import { Badge, Button, Progress } from './ui'
 import { formatBytes } from '../lib/filekit'
@@ -9,11 +8,8 @@ interface RunStepProps {
   onRun: (jobId: string) => void
   onRemove: (jobId: string) => void
   onClearFinished: () => void
-  onPreview: (job: Job) => void
   onAddMore: () => void
   onStartOver: () => void
-  previewJob: Job | null
-  onClosePreview: () => void
 }
 
 /**
@@ -28,37 +24,21 @@ export function RunStep({
   onRun,
   onRemove,
   onClearFinished,
-  onPreview,
   onAddMore,
   onStartOver,
-  previewJob,
-  onClosePreview,
 }: RunStepProps) {
   const jobs = useAppStore((state) => state.jobs)
   const processing = useAppStore((state) => state.processing)
-  const model = useAppStore((state) => state.model)
 
   return (
     <div className="flex flex-col gap-4">
       <BatchProgress jobs={jobs} processing={processing} />
-
-      {previewJob?.original && (
-        <AbPreview
-          job={previewJob}
-          source={previewJob.original}
-          model={model}
-          title="A/B preview"
-          hint={`${previewJob.sourceName} · the live engine, not the rendered file`}
-          onClose={onClosePreview}
-        />
-      )}
 
       <JobQueue
         jobs={jobs}
         onRun={onRun}
         onRemove={onRemove}
         onClearFinished={onClearFinished}
-        onPreview={onPreview}
       />
 
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-[var(--color-surface-1)]/60 p-4">

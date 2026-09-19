@@ -11,11 +11,12 @@ import { logger } from './logger'
  * RNNoise together with an `AudioWorkletProcessor`. The same processor and the
  * same wasm binary drive both pipelines:
  *
- * - **Batch (Pipeline A)**: rendered through an `OfflineAudioContext`. RNNoise
- *   is a 48 kHz, frame-based recurrent network, so the browser's own audio
- *   rendering thread is the cheapest correct way to run it a whole file at a
- *   time — `startRendering()` hands back the finished buffer.
- * - **Preview (Pipeline B)**: the same node, live, inside the A/B graph.
+ * There is only one RNNoise path in the app: rendered through an
+ * `OfflineAudioContext`. RNNoise is a 48 kHz, frame-based recurrent network, so
+ * the browser's own audio rendering thread is the cheapest correct way to run
+ * it — `startRendering()` hands back the finished buffer. The A/B audition goes
+ * through this same function, on an excerpt, rather than running a second live
+ * implementation that could drift from the output.
  *
  * The wasm binaries are emitted by the bundler as hashed assets, so a deployed
  * build fetches them from its own origin and nothing else.
@@ -43,10 +44,10 @@ export function rnnoiseSupported(): boolean {
 }
 
 /**
- * The worklet node type declares an `AudioContext`, because that is the live
- * preview case. RNNoise itself is perfectly happy in an `OfflineAudioContext`
- * (both are `BaseAudioContext`s and both implement `audioWorklet`), which is how
- * a batch render gets a whole file through it in one pass.
+ * The worklet node type declares an `AudioContext`, but RNNoise is perfectly
+ * happy in an `OfflineAudioContext` too (both are `BaseAudioContext`s and both
+ * implement `audioWorklet`), which is how a whole file goes through it in one
+ * pass.
  */
 function createNode(context: BaseAudioContext, wasmBinary: ArrayBuffer): RnnoiseWorkletNode {
   return new RnnoiseWorkletNode(context as unknown as AudioContext, {
@@ -108,25 +109,3 @@ export async function renderWithRnnoise(samples: Float32Array): Promise<Float32A
   }
 }
 
-/**
- * A live RNNoise node for the A/B preview. Returns null (rather than throwing)
- * when the browser or the context cannot host it, so the preview can fall back
- * to reporting why.
- */
-export async function createRnnoisePreviewNode(
-  context: BaseAudioContext
-): Promise<RnnoiseWorkletNode | null> {
-  if (!rnnoiseSupported()) return null
-
-  // The processor assumes 48 kHz. A context opened at 44.1 kHz would produce
-  // garbage rather than an error, so refuse instead.
-  if (context.sampleRate !== RNNOISE_RATE) {
-    logger.warn(
-      `rnnoise preview needs a 48 kHz AudioContext (got ${context.sampleRate} Hz); live RNNoise preview unavailable`
-    )
-    return null
-  }
-
-  await addRnnoiseWorkletModule(context)
-  return createNode(context, await loadRnnoiseBinary())
-}

@@ -1,16 +1,16 @@
 {
   "name": "hushwing-audio",
-  "version": "1.2.0",
-  "title": "Hushwing Audio",
+  "version": "1.3.0",
+  "title": "Hushwing",
   "description": "Private, client-side voice isolation for audio and video. Enhances media locally with WebAssembly and Web Audio; nothing is uploaded.",
   "transport": "browser",
   "entry": "./index.html",
   "privacy": "No network calls are made with your media. Processing happens in the page.",
   "output": "The output follows the source: a video comes back as a video with the enhanced track muxed back in, audio as a 48 kHz mono WAV. There is no format option.",
-  "flow": "A three-step wizard. Step 1 adds files (main[data-wizard-step=\"add\"]), step 2 picks an engine and auditions it (\"engine\"), step 3 runs the queue (\"run\"). Only the current step is rendered, and queueing a file advances the wizard for you.",
+  "flow": "A three-step wizard. Step 1 adds files (main[data-wizard-step=\"add\"]), step 2 picks an engine (\"engine\"), step 3 runs the queue (\"run\"). Only the current step is rendered, and queueing a file advances the wizard for you. There is no in-app preview: judge a result by running the queue and downloading it.",
   "engines": {
     "webaudio": "Pure-JS voice-band chain (high-pass, expander, compressor, limiter) rendered at 16 kHz.",
-    "rnnoise": "Real RNNoise WebAssembly at its native 48 kHz, in both the batch render and the live A/B audition."
+    "rnnoise": "Real RNNoise WebAssembly at its native 48 kHz, rendered through an offline audio graph."
   },
   "tools": [
     {
@@ -60,7 +60,7 @@
             "resultUrl": { "type": "string" },
             "error": { "type": "string" },
             "warning": { "type": "string" },
-            "decoder": { "type": "string", "enum": ["wav reader", "mp3", "flac", "ffmpeg"], "description": "Which decoder produced the PCM — audio formats are decoded in JavaScript, so they never download the ffmpeg core." }
+            "decoder": { "type": "string", "enum": ["wav reader", "mediabunny", "ffmpeg"], "description": "Which reader produced the PCM. WAV is parsed in JS and everything mediabunny can demux is decoded with the browser's own codecs, so those never download the ffmpeg core; only AVI and friends reach ffmpeg." }
           }
         }
       }
@@ -77,14 +77,13 @@
     "upload": "input[data-mcp-action=\"upload\"]",
     "addedFiles": "[data-mcp-target=\"added-files\"] li[data-job-id]",
     "modelSelector": "[data-mcp-target=\"model-selector\"][data-model-id=\"webaudio|rnnoise|deepfilternet\"]",
-    "abPreview": "[data-mcp-target=\"ab-preview\"]",
     "processQueue": "button[data-mcp-action=\"process-queue\"]",
     "startOver": "button[data-mcp-action=\"start-over\"]",
     "batchProgress": "[data-mcp-target=\"batch-progress\"]",
     "downloadResult": "a[data-mcp-action=\"download-result\"][data-job-id=\"<uuid>\"]",
     "exportZip": "button[data-mcp-action=\"export-zip\"]",
     "diagnostics": "[data-mcp-target=\"diagnostics\"]",
-    "jobRow": "li[data-job-id=\"<uuid>\"][data-status=\"queued|preparing|processing|completed|error\"][data-job-model=\"webaudio|rnnoise\"][data-job-decoder=\"wav reader|mp3|flac|ffmpeg\"]"
+    "jobRow": "li[data-job-id=\"<uuid>\"][data-status=\"queued|preparing|processing|completed|error\"][data-job-model=\"webaudio|rnnoise\"][data-job-decoder=\"wav reader|mediabunny|ffmpeg\"]"
   },
   "urlParameters": {
     "model": "webaudio | rnnoise — pre-selects a model (?model=rnnoise)",
@@ -93,9 +92,11 @@
     "coi": "off — disables the cross-origin isolation service worker (?coi=off)"
   },
   "capabilities": {
-    "audio": ["wav", "mp3", "m4a", "flac", "ogg"],
-    "video": ["mp4", "mov", "mkv", "webm", "avi"],
-    "nativeDecoders": ["wav", "mp3", "flac"],
+    "audio": ["wav", "mp3", "m4a", "aac", "flac", "ogg", "oga", "opus"],
+    "video": ["mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "flv", "ogv", "ts", "3gp"],
+    "nativeDecoders": ["wav", "mediabunny (mp3, flac, m4a/aac, ogg/vorbis, opus, and audio inside mp4/mov/mkv/webm)"],
+    "ffmpegDecoders": ["avi", "wmv", "flv", "and any container/codec the browser cannot decode natively"],
+    "videoOutput": "The container follows the source's codec: webm stays webm, mp4/mov stay mp4/mov, avi stays avi, and anything else is remuxed to mkv so the picture is never dropped. Video is copied, never re-encoded.",
     "storage": "Origin Private File System",
     "queue": "One job at a time; files added while a batch drains are picked up automatically.",
     "acceptedModelsForV1": ["webaudio", "rnnoise"],

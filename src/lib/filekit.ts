@@ -12,13 +12,22 @@ export function fileSizeOf(file: File | Blob): number {
   return typeof file.size === 'number' ? file.size : 0
 }
 
+/**
+ * Formats we recognise by name. This drives `isVideo()` and the file picker,
+ * not the decode decision: `src/lib/decode.ts` tries mediabunny on anything
+ * that is not a WAV and drops to ffmpeg when that fails, so a format missing
+ * from this list still processes.
+ */
 export const SUPPORTED_SPECS: MediaSpec[] = [
   { name: 'WAV', mime: 'audio/wav', ext: '.wav' },
   { name: 'MP3', mime: 'audio/mpeg', ext: '.mp3' },
   { name: 'M4A', mime: 'audio/mp4', ext: '.m4a' },
+  { name: 'AAC', mime: 'audio/aac', ext: '.aac' },
   { name: 'FLAC', mime: 'audio/flac', ext: '.flac' },
   { name: 'OGG', mime: 'audio/ogg', ext: '.ogg' },
+  { name: 'OPUS', mime: 'audio/opus', ext: '.opus' },
   { name: 'MP4', mime: 'video/mp4', ext: '.mp4' },
+  { name: 'M4V', mime: 'video/x-m4v', ext: '.m4v' },
   { name: 'MOV', mime: 'video/quicktime', ext: '.mov' },
   { name: 'MKV', mime: 'video/x-matroska', ext: '.mkv' },
   { name: 'WEBM', mime: 'video/webm', ext: '.webm' },
@@ -26,7 +35,8 @@ export const SUPPORTED_SPECS: MediaSpec[] = [
 ]
 
 export const ACCEPT_ATTRIBUTE =
-  '.wav,.mp3,.m4a,.flac,.ogg,.mp4,.mov,.mkv,.webm,.avi,audio/*,video/*'
+  '.wav,.mp3,.m4a,.aac,.flac,.ogg,.oga,.opus,.mp4,.m4v,.mov,.mkv,.webm,.avi,.wmv,.flv,.ogv,.ts,.3gp' +
+  ',audio/*,video/*'
 
 export function isVideo(file: File | Blob): boolean {
   if (file.type.startsWith('video/')) return true

@@ -2,7 +2,7 @@ import { useAppStore } from '../store/app'
 import { logger } from './logger'
 import { extractAudioToWav, muxVideo, stageFileInOPFS } from './ffmpeg'
 import { createEngine } from './engine'
-import { decodeAudioNatively, type DecodedAudio } from './decode'
+import { decodeAudio, type DecodedAudio } from './decode'
 import { encodeWavChunks, fileNameOf, isVideo, parseWav, suggestedOutputFilename } from './filekit'
 import { openOPFSWriter, readDataFromOPFS, removeFromOPFS } from './opfs'
 import { resample } from './dsp'
@@ -180,10 +180,10 @@ interface PreparedAudio {
 /**
  * Get mono PCM at the rate the engine wants.
  *
- * WAV, MP3, FLAC and Ogg-Opus are decoded in plain JavaScript, so those jobs
- * never make the browser fetch the 32 MB ffmpeg core. Everything else — video
- * containers, M4A/AAC, Ogg-Vorbis — goes through ffmpeg, which also does the
- * resampling for free.
+ * WAV is parsed here, and everything else `mediabunny` can demux — MP3, FLAC,
+ * M4A/AAC, Ogg, Opus, and the audio track of any video container it reads — is
+ * decoded by the browser's own codecs. Those jobs never fetch the 32 MB ffmpeg
+ * core. AVI, WMV and friends still go through ffmpeg, which reads everything.
  *
  * Progress stays in the 12–42 band so the batch bar never moves backwards.
  */
@@ -197,7 +197,9 @@ async function prepareAudio(
 
   let decoded: DecodedAudio | null = null
   try {
-    decoded = await decodeAudioNatively(source, name)
+    decoded = await decodeAudio(source, name, {
+      onProgress: (fraction) => report(12 + Math.round(fraction * 26), 'Reading audio'),
+    })
   } catch (error) {
     // A decoder that recognises the container but cannot read it must not fail
     // the job: ffmpeg gets a turn next.

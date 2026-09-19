@@ -97,6 +97,27 @@ export async function getFFmpeg(): Promise<FFmpeg> {
 }
 
 /**
+ * Turn a non-zero exit into something a person can act on.
+ *
+ * The common cases are worth naming: a video with no audio track cannot be
+ * cleaned, and "ffmpeg exited with code 1" tells the user nothing about why.
+ */
+function explainFailure(code: number, label: string, tail: string[]): string {
+  const lines = tail.join('\n')
+  if (/does not contain any stream|Output file #0 does not contain/i.test(lines)) {
+    return 'This file has no audio track to clean up.'
+  }
+
+  const detail = [...tail]
+    .reverse()
+    .find((line) => /error|invalid|could not|failed|unsupported|missing/i.test(line))
+
+  return `ffmpeg exited with code ${code} while trying to ${label}${
+    detail ? ` — ${detail.trim()}` : ''
+  }`
+}
+
+/**
  * The ffmpeg worker reports failures as plain strings (`e.toString()`), so a
  * naive `error instanceof Error` check throws away the only useful detail.
  */
@@ -145,8 +166,13 @@ async function run({
   const core = await getFFmpeg()
 
   let duration = 0
+  // Keep the tail of ffmpeg's own output: an exit code on its own is useless in
+  // a job error, and the reason is almost always one of these lines.
+  const tail: string[] = []
   const onLog = ({ message }: { message: string }) => {
     logger.debug(`[ffmpeg] ${message}`)
+    tail.push(message)
+    if (tail.length > 12) tail.shift()
     const parsed = parseDurationSeconds(message)
     if (parsed) duration = parsed
   }
@@ -174,7 +200,7 @@ async function run({
 
     const code = await core.exec(argv)
     if (code !== 0) {
-      throw new Error(`ffmpeg exited with code ${code} while trying to ${label}`)
+      throw new Error(explainFailure(code, label, tail))
     }
 
     const output = await core.readFile(outputName)
@@ -286,11 +312,22 @@ function muxTargetFor(videoName: string): MuxTarget {
       }
     case '.avi':
       return { container: 'avi', extension: '.avi', audioEncoders: ['libmp3lame', 'aac'] }
+    case '.mp4':
+      return { container: 'mp4', extension: '.mp4', audioEncoders: ['aac', 'libmp3lame'] }
     case '.mov':
     case '.m4v':
       return { container: 'mp4', extension: '.mov', audioEncoders: ['aac', 'libmp3lame'] }
     default:
-      return { container: 'mp4', extension: '.mp4', audioEncoders: ['aac', 'libmp3lame'] }
+      // Everything else — `.wmv`, `.flv`, `.ogv`, `.ts`, `.3gp` — is routed to
+      // Matroska. It is the only common container that will take any of the
+      // video codecs those files can carry (VC-1, FLV1, Theora, MPEG-2, H.263),
+      // where an MP4 would reject the stream and the job would lose its video.
+      // The picture is still copied, never re-encoded.
+      return {
+        container: 'mkv',
+        extension: '.mkv',
+        audioEncoders: ['aac', 'libopus', 'libvorbis', 'libmp3lame'],
+      }
   }
 }
 

@@ -67,7 +67,7 @@ export function getLogs(): readonly LogEntry[] {
 
 export function exportLogs(): string {
   const header = [
-    'Hushwing Audio — Diagnostic Log',
+    'Hushwing — Diagnostic Log',
     `Exported: ${new Date().toISOString()}`,
     `User agent: ${typeof navigator === 'undefined' ? 'unknown' : navigator.userAgent}`,
     '--------------------------------------------------',

@@ -50,6 +50,24 @@ const FIXTURES = {
     name: 'legacy.ogg',
     mimeType: 'audio/ogg',
   },
+  m4a: {
+    file: process.env.E2E_M4A ?? join(cacheDir, 'sample1.m4a'),
+    url: 'https://filesamples.com/samples/audio/m4a/sample1.m4a',
+    name: 'call-recording.m4a',
+    mimeType: 'audio/x-m4a',
+  },
+  avi: {
+    file: process.env.E2E_AVI ?? join(cacheDir, 'with-audio.avi'),
+    url: 'https://filesamples.com/samples/video/avi/sample_960x400_ocean_with_audio.avi',
+    name: 'ocean.avi',
+    mimeType: 'video/x-msvideo',
+  },
+  silentAvi: {
+    file: process.env.E2E_AVI_SILENT ?? join(cacheDir, 'clip.avi'),
+    url: 'https://filesamples.com/samples/video/avi/sample_640x360.avi',
+    name: 'silent.avi',
+    mimeType: 'video/x-msvideo',
+  },
 }
 
 const results = []
@@ -201,6 +219,8 @@ async function inspectDownload(jobId) {
       size: bytes.length,
       head: String.fromCharCode(...bytes.subarray(0, 4)),
       brand: String.fromCharCode(...bytes.subarray(4, 8)),
+      // For RIFF containers the fourcc sits at offset 8 (`RIFF` size `AVI `/`WAVE`).
+      container: String.fromCharCode(...bytes.subarray(8, 12)),
       hex: Array.from(bytes.subarray(0, 4))
         .map((byte) => byte.toString(16).padStart(2, '0'))
         .join(''),
@@ -315,57 +335,23 @@ try {
   const selected = await page.$eval('[data-mcp-target="model-selector"][data-model-id="rnnoise"]', (node) => node.dataset.selected)
   record('choosing an engine marks it selected', selected === 'true', `data-selected=${selected}`)
 
-  /* ------------------------------------------------- A/B preview (live) -- */
-  await page.waitForSelector('canvas[aria-label^="Waveform"]', { timeout: 20_000 })
-  record('the A/B audition opens on the engine step with a waveform canvas', true)
-
-  await page.waitForSelector('button[data-mcp-action="preview-toggle-play"][data-preview-status="ready"]', {
-    timeout: 30_000,
-  })
-  const audition = await page.$eval('[data-mcp-target="ab-preview"]', (node) => ({
-    model: node.dataset.previewModel,
-    caveat: node.querySelector('p.bg-amber-500\\/10')?.textContent?.trim() ?? null,
-    unavailable: /Live preview unavailable/i.test(node.textContent ?? ''),
+  /* ------------------------------- no preview UI, and no worklet (on purpose) -- */
+  // The live AudioWorklet audition was removed: it could not match the delivered
+  // file, and a preview that disagrees with the output is worse than none. This
+  // guards against either one quietly coming back.
+  const previewGone = await page.evaluate(() => ({
+    panel: Boolean(document.querySelector('[data-mcp-target="ab-preview"]')),
+    openFromRow: Boolean(document.querySelector('[data-mcp-action="open-ab-preview"]')),
+    play: Boolean(document.querySelector('[data-mcp-action="preview-toggle-play"]')),
+    workletChunk: performance
+      .getEntriesByType('resource')
+      .some((entry) => entry.name.includes('worklets/') || entry.name.includes('hushwing-preview')),
   }))
   record(
-    'the audition runs the selected engine with no caveat',
-    audition.model === 'rnnoise' && !audition.unavailable && !audition.caveat,
-    JSON.stringify(audition)
+    'the removed A/B preview and its worklet stay removed',
+    Object.values(previewGone).every((value) => value === false),
+    JSON.stringify(previewGone)
   )
-
-  await page.click('button[data-mcp-action="preview-toggle-play"]')
-
-  // Watch the meter and the playhead while the clip actually plays.
-  const playback = await page.evaluate(async () => {
-    let peak = 0
-    let maxPosition = 0
-    const started = performance.now()
-    while (performance.now() - started < 3000) {
-      const level = document.querySelector('[data-preview-level]')
-      const width = parseFloat(level?.style.width ?? '0')
-      if (width > peak) peak = width
-
-      const position = parseFloat(
-        document.querySelector('[data-preview-position]')?.getAttribute('data-preview-position') ?? '0'
-      )
-      if (position > maxPosition) maxPosition = position
-
-      await new Promise((resolve) => setTimeout(resolve, 100))
-    }
-    return { peak, maxPosition }
-  })
-  record('audio flows through the engine (level meter moves)', playback.peak > 0, `peak ${playback.peak}%`)
-  record('playback position advances while playing', playback.maxPosition > 0, `reached ${playback.maxPosition}s`)
-
-  await page.click('button[data-mcp-action="preview-bypass"]')
-  await page.waitForSelector('span[data-preview-mode="a"]', { timeout: 5000 })
-  record('switching to A keeps playback on one graph', true)
-
-  await page.click('button[data-mcp-action="preview-enhanced"]')
-  await page.waitForSelector('span[data-preview-mode="b"]', { timeout: 5000 })
-  record('switching back to B works', true)
-
-  await page.click('button[data-mcp-action="preview-toggle-play"]').catch(() => undefined)
 
   /* -------------------------------------------------- step 1 again: rest -- */
   await page.click('button[data-mcp-action="wizard-back"]')
@@ -442,6 +428,8 @@ try {
     fixtureBytes.mp3 && { ...FIXTURES.mp3, buffer: fixtureBytes.mp3 },
     fixtureBytes.flac && { ...FIXTURES.flac, buffer: fixtureBytes.flac },
     fixtureBytes.ogg && { ...FIXTURES.ogg, buffer: fixtureBytes.ogg },
+    fixtureBytes.m4a && { ...FIXTURES.m4a, buffer: fixtureBytes.m4a },
+    fixtureBytes.avi && { ...FIXTURES.avi, buffer: fixtureBytes.avi },
   ].filter(Boolean)
 
   for (const upload of uploads) {
@@ -541,17 +529,19 @@ try {
   // no JS decoder handles) go through ffmpeg.
   const decoders = Object.fromEntries(settled.map((row) => [row.name, row.decoder]))
   record(
-    'WAV, MP3 and FLAC are decoded without ffmpeg',
+    'WAV is parsed in JS and MP3/FLAC/Ogg/M4A-AAC all decode natively',
     decoders['interview.wav'] === 'wav reader' &&
-      decoders['voiceover.mp3'] === 'mp3' &&
-      (decoders['master.flac'] ?? 'flac') === 'flac',
+      decoders['voiceover.mp3'] === 'mediabunny' &&
+      decoders['master.flac'] === 'mediabunny' &&
+      decoders['legacy.ogg'] === 'mediabunny' &&
+      decoders['call-recording.m4a'] === 'mediabunny',
     JSON.stringify(decoders)
   )
   record(
-    'Ogg/Vorbis and the videos fall back to ffmpeg',
-    (decoders['legacy.ogg'] ?? 'ffmpeg') === 'ffmpeg' &&
-      decoders['clip.mp4'] === 'ffmpeg' &&
-      decoders['screen-capture.webm'] === 'ffmpeg',
+    'video audio is read natively, and AVI falls back to ffmpeg',
+    decoders['clip.mp4'] === 'mediabunny' &&
+      decoders['screen-capture.webm'] === 'mediabunny' &&
+      decoders['ocean.avi'] === 'ffmpeg',
     JSON.stringify(decoders)
   )
   record(
@@ -575,7 +565,7 @@ try {
   if (byName['voiceover.mp3']) {
     const mp3Result = await inspectDownload(byName['voiceover.mp3'].id)
     record(
-      'MP3 decoded in JavaScript and delivered as a 48 kHz WAV',
+      'MP3 decoded natively and delivered as a 48 kHz WAV',
       !mp3Result.missing &&
         mp3Result.head === 'RIFF' &&
         mp3Result.wavHeader?.sampleRate === 48_000 &&
@@ -589,7 +579,7 @@ try {
   if (byName['master.flac']) {
     const flacResult = await inspectDownload(byName['master.flac'].id)
     record(
-      'FLAC decoded in JavaScript and delivered as a 48 kHz WAV',
+      'FLAC decoded natively and delivered as a 48 kHz WAV',
       !flacResult.missing &&
         flacResult.head === 'RIFF' &&
         flacResult.wavHeader?.sampleRate === 48_000 &&
@@ -604,12 +594,41 @@ try {
   if (byName['legacy.ogg']) {
     const oggResult = await inspectDownload(byName['legacy.ogg'].id)
     record(
-      'Ogg/Vorbis still works through the ffmpeg fallback',
+      'Ogg/Vorbis decoded natively and delivered as a 48 kHz WAV',
       !oggResult.missing && oggResult.head === 'RIFF' && oggResult.wavHeader?.sampleRate === 48_000,
       `${oggResult.download} · ${oggResult.size} bytes · ${oggResult.wavHeader?.sampleRate} Hz`
     )
   } else {
-    skip('Ogg fallback case', 'fixture unavailable')
+    skip('Ogg case', 'fixture unavailable')
+  }
+
+  if (byName['call-recording.m4a']) {
+    const m4aResult = await inspectDownload(byName['call-recording.m4a'].id)
+    record(
+      'M4A/AAC decoded natively and delivered as a 48 kHz WAV',
+      !m4aResult.missing &&
+        m4aResult.head === 'RIFF' &&
+        m4aResult.wavHeader?.sampleRate === 48_000 &&
+        m4aResult.wavHeader.channels === 1 &&
+        m4aResult.size > 1_000_000,
+      `${m4aResult.download} · ${m4aResult.size} bytes · ${m4aResult.wavHeader?.sampleRate} Hz`
+    )
+  } else {
+    skip('M4A decode case', 'fixture unavailable')
+  }
+
+  if (byName['ocean.avi']) {
+    const aviResult = await inspectDownload(byName['ocean.avi'].id)
+    record(
+      'AVI (ffmpeg path) comes back in an AVI container with the enhanced audio',
+      !aviResult.missing &&
+        aviResult.head === 'RIFF' &&
+        aviResult.container === 'AVI ' &&
+        (aviResult.download ?? '').endsWith('.avi'),
+      `${aviResult.download} · ${aviResult.size} bytes · ${aviResult.head}/${aviResult.container}`
+    )
+  } else {
+    skip('AVI mux case', 'fixture unavailable')
   }
 
   const webmResult = await inspectDownload(byName['screen-capture.webm'].id)
@@ -648,14 +667,93 @@ try {
     record('zip export packaged the results', false, 'no download event fired')
   }
 
-  /* ------------------------------------------- A/B preview from the queue -- */
-  await page.click(`button[data-mcp-action="open-ab-preview"][data-job-id="${byName['interview.wav'].id}"]`)
-  await page.waitForSelector('canvas[aria-label^="Waveform"]', { timeout: 20_000 })
-  record('A/B panel opens from the queue row', true)
+  /* ------------------------------- native decode never fetches the core -- */
+  // The claim: an audio queue is decoded without the 32 MB ffmpeg core. The job's
+  // `decoder` already proves which path ran, so this audit checks the other half
+  // — that nothing preloaded the core behind the job's back. It needs a fresh
+  // context, because the video jobs above have already pulled it in.
+  if (fixtureBytes.mp3 && fixtureBytes.ogg && fixtureBytes.m4a) {
+    const auditContext = await browser.newContext({ acceptDownloads: true })
+    const auditPage = await auditContext.newPage()
+    const coreRequests = []
+    auditPage.on('request', (request) => {
+      if (request.url().includes('ffmpeg-core')) coreRequests.push(request.url())
+    })
 
-  await page.click('button[data-mcp-action="preview-close"]')
-  await sleep(500)
-  record('closing the preview tears the graph down', (await page.$('canvas[aria-label^="Waveform"]')) === null)
+    try {
+      await auditPage.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' })
+      await auditPage.waitForSelector('main[data-wizard-step]', { timeout: 20_000 })
+
+      const audit = []
+      for (const spec of [FIXTURES.mp3, FIXTURES.ogg, FIXTURES.m4a]) {
+        const key = spec.name.endsWith('.mp3') ? 'mp3' : spec.name.endsWith('.ogg') ? 'ogg' : 'm4a'
+        const outcome = await auditPage.evaluate(
+          async ({ name, type, b64 }) => {
+            const binary = atob(b64)
+            const bytes = new Uint8Array(binary.length)
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+            const blob = await window.HushwingAPI.processMedia({
+              file: new File([bytes], name, { type }),
+              model: 'webaudio',
+            })
+            const jobs = window.HushwingAPI.getJobs()
+            const job = jobs[jobs.length - 1] ?? {}
+            return { decoder: job.decoder, status: job.status, size: blob.size }
+          },
+          { name: spec.name, type: spec.mimeType, b64: fixtureBytes[key].toString('base64') }
+        )
+        audit.push(`${spec.name}:${outcome.decoder}/${outcome.status}`)
+      }
+
+      record(
+        'an audio-only queue decodes natively and never fetches the ffmpeg core',
+        coreRequests.length === 0 && audit.every((line) => line.includes('mediabunny/completed')),
+        `${audit.join(', ')} · core requests: ${coreRequests.length}`
+      )
+    } catch (error) {
+      record('an audio-only queue never fetches the ffmpeg core', false, error.message)
+    } finally {
+      await auditContext.close()
+    }
+  } else {
+    skip('native decode audit', 'fixtures unavailable')
+  }
+
+  /* ------------------------------------------ silent video: a clear failure -- */
+  // A video with no audio track cannot be cleaned. The job must say so instead of
+  // surfacing an ffmpeg exit code, because that is what a user can act on.
+  if (fixtureBytes.silentAvi) {
+    const silent = await page.evaluate(
+      async ({ name, type, b64 }) => {
+        const binary = atob(b64)
+        const bytes = new Uint8Array(binary.length)
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+        try {
+          await window.HushwingAPI.processMedia({
+            file: new File([bytes], name, { type }),
+            model: 'webaudio',
+          })
+          return { ok: true }
+        } catch (error) {
+          const jobs = window.HushwingAPI.getJobs()
+          const job = jobs[jobs.length - 1] ?? {}
+          return { ok: false, message: String(error && error.message), jobError: job.error }
+        }
+      },
+      {
+        name: FIXTURES.silentAvi.name,
+        type: FIXTURES.silentAvi.mimeType,
+        b64: fixtureBytes.silentAvi.toString('base64'),
+      }
+    )
+    record(
+      'a video with no audio track fails with a clear message',
+      !silent.ok && /no audio track/i.test(silent.message ?? ''),
+      silent.message ?? 'resolved unexpectedly'
+    )
+  } else {
+    skip('silent-video case', 'fixture unavailable')
+  }
 
   /* ------------------------------------------------------------- url params -- */
   await page.goto(`${BASE}/?model=rnnoise&debug=true&coi=off#studio`, { waitUntil: 'networkidle' })

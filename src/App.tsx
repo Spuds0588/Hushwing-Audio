@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { Header } from './components/Header'
 import { Stepper } from './components/Stepper'
@@ -10,21 +10,18 @@ import { applyUrlParams, parseUrlParams, useAppStore, type WizardStep } from './
 import { purgeJobFiles, runJob, runQueue } from './lib/pipeline'
 import { installHushwingAPI } from './lib/hushwing-api'
 import { availableModelIds } from './lib/models'
-import { nativeKindFor } from './lib/decode'
+import { mayNeedFfmpeg } from './lib/decode'
 import { preloadFFmpeg } from './lib/ffmpeg'
 import { revokeMediaUrl } from './lib/filekit'
 import { logger } from './lib/logger'
 import { opfsSupported } from './lib/opfs'
-import type { Job } from './types/hushwing'
 
 /**
- * Hushwing Audio is one page and one flow: add files, pick an engine, watch the
+ * Hushwing is one page and one flow: add files, pick an engine, watch the
  * queue. Each of those is a step, and only the current step is on screen — the
  * step the user is on is the only thing the app asks them to think about.
  */
 export default function App() {
-  const [previewJobId, setPreviewJobId] = useState<string | null>(null)
-
   const jobs = useAppStore((state) => state.jobs)
   const step = useAppStore((state) => state.step)
   const setStep = useAppStore((state) => state.setStep)
@@ -37,7 +34,7 @@ export default function App() {
     applyUrlParams(params)
     installHushwingAPI()
 
-    logger.info('Hushwing Audio booted')
+    logger.info('Hushwing booted')
     logger.info(
       `engine: ${availableModelIds().join(', ')} · OPFS ${opfsSupported() ? 'yes' : 'no'} · crossOriginIsolated ${
         window.crossOriginIsolated === true ? 'yes' : 'no'
@@ -50,9 +47,7 @@ export default function App() {
    * An MP3, WAV, FLAC or Ogg-Opus job is decoded in JavaScript and never touches
    * it, so a queue of audio does not pay for a video tool it will not use.
    */
-  const needsFFmpeg = jobs.some(
-    (job) => job.sourceKind === 'video' || nativeKindFor(job.sourceName) === null
-  )
+  const needsFFmpeg = jobs.some((job) => mayNeedFfmpeg(job.sourceName, job.sourceKind))
   useEffect(() => {
     if (needsFFmpeg) preloadFFmpeg()
   }, [needsFFmpeg])
@@ -77,7 +72,6 @@ export default function App() {
       void purgeJobFiles(job)
     }
     useAppStore.getState().removeJob(jobId)
-    setPreviewJobId((current) => (current === jobId ? null : current))
   }, [])
 
   const handleClearFinished = useCallback(() => {
@@ -91,7 +85,6 @@ export default function App() {
     }
 
     useAppStore.getState().clearFinished()
-    setPreviewJobId(null)
   }, [])
 
   /** Wipe the queue (and the results it is holding in OPFS) and start again. */
@@ -100,14 +93,8 @@ export default function App() {
       if (job.resultUrl) revokeMediaUrl(job.resultUrl)
       void purgeJobFiles(job)
     }
-    setPreviewJobId(null)
     useAppStore.getState().resetQueue()
   }, [])
-
-  const previewJob = useMemo(
-    () => jobs.find((job) => job.id === previewJobId) ?? null,
-    [jobs, previewJobId]
-  )
 
   const canReach = useCallback(
     (target: WizardStep) => {
@@ -160,11 +147,8 @@ export default function App() {
               onRun={handleRunJob}
               onRemove={handleRemoveJob}
               onClearFinished={handleClearFinished}
-              onPreview={(job: Job) => setPreviewJobId(job.id)}
               onAddMore={() => setStep('add')}
               onStartOver={handleStartOver}
-              previewJob={previewJob}
-              onClosePreview={() => setPreviewJobId(null)}
             />
           )}
         </motion.section>
@@ -174,7 +158,7 @@ export default function App() {
 
       <footer className="border-t border-border">
         <div className="mx-auto flex max-w-3xl flex-col gap-2 px-4 py-8 text-xs text-[var(--color-ink-muted)] sm:flex-row sm:items-center sm:justify-between sm:px-6">
-          <p>Hushwing Audio — client-side voice isolation. Licensed under the terms in LICENSE.</p>
+          <p>Hushwing — client-side voice isolation. Licensed under the terms in LICENSE.</p>
           <p>
             Capabilities for agents: <code>window.HushwingAPI</code> · <code>/mcp.json</code> ·{' '}
             <code>?debug=true</code>

@@ -34,10 +34,9 @@ interface JobQueueProps {
   onRun: (jobId: string) => void
   onRemove: (jobId: string) => void
   onClearFinished: () => void
-  onPreview: (job: Job) => void
 }
 
-export function JobQueue({ jobs, onRun, onRemove, onClearFinished, onPreview }: JobQueueProps) {
+export function JobQueue({ jobs, onRun, onRemove, onClearFinished }: JobQueueProps) {
   const [filter, setFilter] = useState<Filter>('all')
   const [exporting, setExporting] = useState(false)
 
@@ -143,7 +142,6 @@ export function JobQueue({ jobs, onRun, onRemove, onClearFinished, onPreview }: 
               job={job}
               onRun={onRun}
               onRemove={onRemove}
-              onPreview={onPreview}
             />
           ))}
         </ul>
@@ -156,12 +154,10 @@ function JobRow({
   job,
   onRun,
   onRemove,
-  onPreview,
 }: {
   job: Job
   onRun: (jobId: string) => void
   onRemove: (jobId: string) => void
-  onPreview: (job: Job) => void
 }) {
   return (
     <li
@@ -224,16 +220,6 @@ function JobRow({
               {job.status === 'error' ? 'Retry' : 'Start'}
             </Button>
           )}
-
-          <Button
-            variant="ghost"
-            size="sm"
-            data-mcp-action="open-ab-preview"
-            data-job-id={job.id}
-            onClick={() => onPreview(job)}
-          >
-            A/B
-          </Button>
 
           {!isActiveJob(job) && (
             <Button

@@ -1,4 +1,4 @@
-# How Hushwing Audio works
+# How Hushwing works
 
 A tour of the moving parts, written for someone who wants to know *why* it is built this way and
 where to start poking. For the rules you must follow when changing things, read
@@ -43,13 +43,15 @@ OPFS outputs/<jobId>.<ext>  →  object URL  →  the download link
 
 `prepareAudio()` is where the format work happens, and it has two paths:
 
-1. **JavaScript decoders first** (`src/lib/decode.ts`). WAV, MP3 and FLAC are decoded in-process, so
-   an audio job starts immediately and never downloads the 32 MB ffmpeg core. Those decoders are
-   imported lazily, so a queue of video never downloads them either. `job.decoder` records exactly
+1. **Native decode first** (`src/lib/decode.ts`). WAV is parsed in-process and every other container
+   goes to `mediabunny`, so an audio job starts immediately and never downloads the 32 MB ffmpeg
+   core. Those readers are imported lazily, so a queue of WAVs downloads neither. `job.decoder`
+   records exactly
    which one ran.
-2. **ffmpeg for everything else** — M4A/AAC, Ogg/Vorbis, and any video container — which also
-   resamples to the target rate for free. If a JavaScript decoder recognises a container but cannot
-   read it, the job falls back to ffmpeg rather than failing.
+2. **ffmpeg for everything else** — AVI, WMV, FLV, and any container `mediabunny` cannot open, or
+   whose codec this browser cannot decode — which also resamples to the target rate for free. If a
+   native reader recognises a container but cannot read it, the job falls back to ffmpeg rather than
+   failing.
 
 Two rates are involved:
 
@@ -107,19 +109,18 @@ Highpass 85 Hz
 ```
 
 Everything is plain arithmetic — no WASM, no allocation per block. That is deliberate: it keeps the
-whole engine inside one file a human can read, and it means the preview and the final render cannot
-disagree.
+whole engine inside one file a human can read, and it is the only place the `webaudio` sound is
+defined.
 
 ### The `rnnoise` engine is not a kernel
 
 RNNoise is a recurrent neural network, not a filter chain, so it does not live in `dsp.ts` at all.
 `src/lib/rnnoise.ts` drives Shiguredo's WebAssembly build (through
-`@sapphi-red/web-noise-suppressor`) in one of two ways:
-
-- **Batch:** an `OfflineAudioContext(1, frames, 48000)` with the RNNoise `AudioWorkletProcessor`
-  wired between a buffer source and the destination. `startRendering()` renders the whole file at
-  full speed on the audio thread, which is the cheapest correct way to run a 48 kHz framed network.
-- **Preview:** the same processor, the same wasm binary, live in the A/B graph.
+`@sapphi-red/web-noise-suppressor`) one way: an `OfflineAudioContext(1, frames, 48000)` with the
+RNNoise `AudioWorkletProcessor` wired between a buffer source and the destination. `startRendering()`
+renders the whole file at full speed on the audio thread, which is the cheapest correct way to run a
+48 kHz framed network. The wasm binary is fetched once per session and shared; each render owns and
+frees its own denoise state.
 
 The frame scheduler in the processor is a delay line that hands RNNoise 480-sample frames and reads
 results back out, which costs a fixed **~11 ms of latency**. Frame counts are preserved exactly, so a
@@ -163,39 +164,23 @@ costs no extra memory on the way in or out. `createEngine()` routes RNNoise to i
 everything else to the worker, falling back to the main thread, so a hardened environment degrades
 instead of failing.
 
-### Pipeline B, and why the A/B switch is click-free
+### There is no preview, and that is deliberate
 
-`PreviewSession` (`src/lib/preview.ts`) builds the whole graph once and never rewires it:
+There used to be one: a live `AudioWorklet` graph (`lib/preview.ts` plus a hand-written
+`public/worklets/hushwing-preview.js`) that played the source while you flipped between the dry
+signal and the engine. It could not be trusted. The batch `webaudio` chain runs at 16 kHz — the band
+limit *is* part of the noise reduction — while the worklet ran at the device rate, so the audition
+was audibly brighter than the WAV it supposedly demonstrated. The preview was predicting a render
+that did not exist.
 
-```
-                 ┌─ dry ─────────────────────┐
-  <audio> ───────┤                            │
-   (MediaElement │─ dsp worklet ─ dsp gain ───┼──► AnalyserNode ─► destination
-    Source)      └─ rnnoise ─── rnnoise gain ┘
-```
+Rather than patch it, it was removed in session 6: the session, the panel, the queue-row button and
+the worklet module are gone, along with `createRnnoisePreviewNode()`. RNNoise now has exactly one
+code path (`renderWithRnnoise`, an `OfflineAudioContext`), and `webaudio` has exactly one
+(`src/lib/dsp.ts`). The e2e suite fails if the preview hooks or the worklet chunk ever come back.
 
-Each branch ends in a `GainNode`, and switching A → B only ramps two gains over 20 ms. Nothing is
-reconnected, nothing is reallocated, and the comparison never stops — which is why it does not click
-or gap. The "wet" branch is whichever engine is selected; `setModel()` creates the RNNoise node on
-demand (and says so in the panel if the browser will not host it), then just moves the gains again.
-
-The preview asks for `AudioContext({ sampleRate: 48000 })` rather than accepting the device rate,
-because the comparison happens against a 48 kHz delivery and RNNoise only runs at 48 kHz. A browser
-that ignores the hint still gets a working Web Audio preview, with an amber note explaining that the
-RNNoise audition is unavailable.
-
-Peaks are decoded once up front with an `OfflineAudioContext(1, 1, 48000)` used purely as a decoder,
-then downsampled to 320 buckets of max-abs values (`computePeaks`) for the waveform canvas. The level
-meter is RMS from the analyser's time-domain data, scaled by 3.2 and clamped — cheap, and it moves
-with the audio rather than with the styling.
-
-The `webaudio` worklet is **plain JavaScript, and mirrors `src/lib/dsp.ts` by hand**, because an
-`AudioWorklet` module is fetched outside the bundler and cannot import TypeScript. The constants are
-duplicated (`HIGHPASS_HZ`, the compressor set, the limiter pair). If you change one file, change the
-other — the two pipelines drifting apart would mean the preview stops predicting the render, which is
-the only thing the preview is for. RNNoise has no such copy: batch and preview load the same wasm
-binary, so they cannot drift at all. A test hook pins the behaviour: `[data-preview-mode="a"|"b"]`,
-`[data-preview-level]`, `[data-preview-position]`, `[data-preview-model]`.
+If a preview returns, it has to be the rendered output — the same decode, the same inference rate,
+the same engine, the same 48 kHz delivery — and not a second implementation of the chain. Anything
+cheaper is a different product from the file the user downloads.
 
 ## 4. ffmpeg.wasm, and the traps in it
 
@@ -203,10 +188,16 @@ binary, so they cannot drift at all. A test hook pins the behaviour: `[data-prev
 rate out of any input (`extractAudioToWav(input, name, sampleRate)`), and put enhanced audio back
 into a video without re-encoding the picture.
 
-**It is the fallback, not the front door.** `src/lib/decode.ts` handles WAV, MP3 and FLAC in plain
-JavaScript, so those formats never fetch the core — a queue of audio makes zero `ffmpeg-core`
-requests, which is verified by the suite rather than assumed. `App.tsx` only preloads the core when a
-queued file is a video or an extension no JavaScript decoder claims.
+**It is the fallback, not the front door.** `src/lib/decode.ts` parses WAV itself and hands every
+other container to `mediabunny`, which decodes with the browser's own codecs — so MP3, FLAC,
+M4A/AAC, Ogg/Vorbis, Opus and the audio inside a video never fetch the core. A queue of audio makes
+zero `ffmpeg-core` requests, which the suite verifies in a fresh browser context rather than
+assuming. `App.tsx` preloads the core only when `mayNeedFfmpeg()` says a queued file is a video or a
+container `mediabunny` cannot open (AVI, WMV, FLV).
+
+A non-zero exit is passed through `explainFailure()`, which names the common cases — a video with no
+audio track says exactly that — and otherwise appends the last meaningful line of ffmpeg's own
+output, because "exited with code 1" is not a diagnosis.
 
 **The core is single-threaded.** That means no `SharedArrayBuffer`, no cross-origin isolation
 requirement, and a binary that works on any static host. The COI service worker (§5) is for the
@@ -277,18 +268,19 @@ agent-drivable (contract in [`AGENTS.md`](./AGENTS.md) §4–§7):
   `downloadDebugLog()`.
 - semantic `data-mcp-*` hooks on the real controls, plus `data-job-id` / `data-status` on job rows.
 - the wizard itself: `main[data-wizard-step]`, `[data-mcp-target="wizard-step"][data-step]`,
-  `[data-mcp-target="model-selector"][data-model-id]`, `[data-mcp-target="ab-preview"]`.
+  `[data-mcp-target="model-selector"][data-model-id]`.
 - URL parameters `?model=`, `?autostart=true`, `?debug=true`, `?coi=off`. The studio is the only
   page, so the `#studio` hash older links use does nothing (harmlessly).
 - `public/mcp.json`, served at `/mcp.json`, so WebMCP clients can discover the tool surface at load.
 
 `e2e/hushwing.e2e.mjs` uses exactly this surface, which is why the suite is short enough to read and
 still covers the whole product: it walks the wizard (and asserts that step one is the *only* step on
-screen), auditions RNNoise live, then queues a generated WAV, a real H.264/AAC MP4, an MP3, a FLAC, an
-Ogg/Vorbis file and an in-page VP8/Opus WebM. Every delivered result is checked for container, rate
-and channels, and every job is checked for which decoder read it — `wav reader`, `mp3` and `flac`
-natively, `ffmpeg` for Vorbis and the videos. Then the zip export, the A/B panel, the URL parameters
-and the API.
+screen), then queues a generated WAV, a real H.264/AAC MP4, an MP3, a FLAC, an Ogg/Vorbis file, an
+M4A/AAC file, an AVI and an in-page VP8/Opus WebM. Every delivered result is checked for container,
+rate and channels, and every job is checked for which decoder read it — `wav reader` for WAV,
+`mediabunny` for MP3/FLAC/Ogg/M4A and for the audio inside MP4/WebM, `ffmpeg` only for AVI. It then
+audits in a fresh context that an audio-only queue fetches the ffmpeg core zero times, and that a
+silent video fails with a sentence. Then the zip export, the URL parameters and the API.
 
 `e2e/hushwing.bulk.mjs` (`bun run test:bulk`) covers the queue instead of one file: 20+ files dropped
 at once, three more dropped mid-drain, and assertions on the invariants that matter at that size —
@@ -301,10 +293,9 @@ growth.
 | If you want to… | Read |
 | --- | --- |
 | understand a job end to end | `src/lib/pipeline.ts` → `runJob()` |
-| change how cleaning sounds | `src/lib/dsp.ts`, then mirror it in `public/worklets/hushwing-preview.js` |
-| work on containers or codecs | `src/lib/ffmpeg.ts` → `muxTargetFor()`, `listEncoders()` |
-| touch the preview or A/B | `src/lib/preview.ts` + `src/components/AbPreview.tsx` |
-| work on decoding or formats | `src/lib/decode.ts` (native decoders), `src/lib/ffmpeg.ts` (everything else) |
+| change how cleaning sounds | `src/lib/dsp.ts` (the only `webaudio` chain) and `src/lib/rnnoise.ts` |
+| work on containers or codecs | `src/lib/ffmpeg.ts` → `muxTargetFor()`, `listEncoders()`, `explainFailure()` |
+| work on decoding or formats | `src/lib/decode.ts` (WAV parser + `mediabunny` reader), `src/lib/filekit.ts` (accept list, specs) |
 | add an engine | `src/types/hushwing.ts`, `src/lib/models.ts`, `createEngine()` in `src/lib/engine.ts`, then both pipelines |
 | add UI or state | `src/store/app.ts` first — the queue and the wizard step are the source of truth |
 | change the flow | `src/components/{Stepper,AddStep,EngineStep,RunStep}.tsx`, composed by `src/App.tsx` |
@@ -317,12 +308,15 @@ growth.
   implementation — `createKernel('rnnoise')` throws, because reaching it means something asked the
   wrong layer to render the model.
 - **DeepFilterNet 3 is not implemented.** The option renders disabled rather than pretending.
-- **RNNoise is 48 kHz or nothing.** A device that will not give the preview a 48 kHz context gets a
-  note and a Web Audio audition instead; the batch render is unaffected.
+- **RNNoise is 48 kHz or nothing.** It is resampled on the way in and out, and its frame scheduler
+  adds a fixed ~11 ms. Nothing in the UI has to know.
 - **Nothing but local files, on purpose.** Cloud import (Drive/OneDrive) and import-from-URL were
   removed: they added keys, OAuth setup and a first-run decision without improving the core loop of
   dropping files in and watching them clean up.
-- **iOS is unproven.** The worklet and the visibility handling exist for it, but the A/B preview has
-  not been verified on a physical device, where Safari interrupts `AudioWorklet` differently.
+- **No preview**, by decision — see §3. Processing the file is the test.
+- **Verified in Chromium only.** A physical Android/iOS pass over a long recording is still on the
+  list, mainly for memory and the OPFS quota.
+- **Video still needs the core.** Muxing is the last thing that does; `todo.md` §3 has the researched
+  route to removing it.
 - **First load is ~32 MB** for the ffmpeg core. It is fetched lazily (only once there is work to do)
   and cached by the browser afterwards, but it is the dominant cost of a cold start.

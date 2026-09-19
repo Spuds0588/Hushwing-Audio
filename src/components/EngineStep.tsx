@@ -1,7 +1,6 @@
-import type { Job, ModelId } from '../types/hushwing'
+import type { ModelId } from '../types/hushwing'
 import { useAppStore } from '../store/app'
 import { MODEL_SPECS } from '../lib/models'
-import { AbPreview } from './AbPreview'
 import { Badge, Button, cx } from './ui'
 
 interface EngineStepProps {
@@ -10,7 +9,7 @@ interface EngineStepProps {
 }
 
 /**
- * Step 2 — choose how the noise gets removed, and hear it first.
+ * Step 2 — choose how the noise gets removed.
  *
  * The choice is a real one, so it gets cards with honest descriptions instead of
  * a dropdown. Whatever is picked applies to every job still waiting, which is
@@ -23,7 +22,6 @@ export function EngineStep({ onProcess, onBack }: EngineStepProps) {
   const processing = useAppStore((state) => state.processing)
 
   const pending = jobs.filter((job) => job.status === 'queued')
-  const audition: Job | undefined = pending.find((job) => job.original)
 
   return (
     <div className="flex flex-col gap-4">
@@ -94,16 +92,6 @@ export function EngineStep({ onProcess, onBack }: EngineStepProps) {
           })}
         </div>
       </div>
-
-      {audition && audition.original && (
-        <AbPreview
-          job={audition}
-          source={audition.original}
-          model={model}
-          title="Hear it before you commit"
-          hint={`${audition.sourceName} · the live engine, not the rendered file`}
-        />
-      )}
 
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-[var(--color-surface-1)]/60 p-4">
         <Button variant="ghost" onClick={onBack} data-mcp-action="wizard-back">

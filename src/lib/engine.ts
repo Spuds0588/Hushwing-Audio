@@ -8,13 +8,12 @@ import type { EnhanceRequest, EnhanceResponse } from '../workers/enhance-worker'
  * A Hushwing engine only needs a sample buffer and a rate. Keeping that
  * contract means the same model can be driven from:
  *
- * - a Web Worker for batch renders (Pipeline A — `WorkerEngine`)
+ * - a Web Worker for batch renders (`WorkerEngine`)
  * - the main thread when workers are unavailable (`LocalEngine`)
- * - an `AudioWorkletNode` for real-time preview (Pipeline B — see
- *   `src/lib/preview.ts`)
+ * - an offline audio graph for RNNoise (`RnnoiseEngine`, see `src/lib/rnnoise.ts`)
  *
- * The `rnnoise` engine ignores the worker: it is WebAssembly, and the browser
- * audio rendering thread is the cheapest place to run it (`RnnoiseEngine`).
+ * There is deliberately no third real-time implementation: a preview that runs
+ * the chain differently from the render cannot be trusted to describe it.
  */
 export interface HushwingEngine {
   readonly model: ModelId

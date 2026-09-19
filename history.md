@@ -484,3 +484,82 @@ wizard had already advanced to step 2, and clicking a step-1 button from step 2.
 mistake — assuming a control exists because it exists somewhere in the flow. The suites now navigate
 by `data-wizard-step` and assert that step one is the *only* step rendered, so a regression that puts
 the whole UI back on one screen fails loudly.
+
+---
+
+## Session 6 — the preview had to go, and the reader got a real library
+
+### The preview could not be trusted, so it was cut
+
+The live `AudioWorklet` audition ran the `webaudio` chain at **48 kHz on the device context**, while
+the batch render of the same engine runs at **16 kHz** — the band limit is part of what removes
+wideband hiss. So the panel demonstrated a brighter, cleaner signal than the WAV it was describing,
+and the worklet was a hand-maintained second copy of `src/lib/dsp.ts` that had to be kept in step by
+hand. A preview that disagrees with the output is worse than no preview.
+
+The first fix attempt was to render the real thing: an excerpt through `prepareAudio` → engine →
+48 kHz delivery, encoded to the same 16-bit WAV the job writes, played A/B through two
+sample-aligned `<audio>` elements crossfaded by a gain ramp. That path was built, and then removed
+on the user's call — the product does not need a preview at all when processing a file is the test
+and demo files can come later. So the panel, the session, the worklet module, the queue-row button
+and `createRnnoisePreviewNode()` are gone, and `src/lib/preview.ts` with them. RNNoise and `webaudio`
+each have exactly one implementation now, and the suite fails if the preview hooks or the worklet
+chunk ever come back.
+
+### `mediabunny` replaced the single-format decoders
+
+The session-5 decoders were one WASM binary per format: `mpg123-decoder` for MP3 and
+`@wasm-audio-decoders/flac` for FLAC, with M4A/AAC and Ogg/Vorbis still paying for the 32 MB core.
+`mediabunny` demuxes MP4/MOV/MKV/WebM/WAV/MP3/Ogg/FLAC/ADTS/MPEG-TS and decodes through the
+browser's own WebCodecs decoders, so one library covers more formats than the two binaries did —
+including the two that previously required ffmpeg. Both old decoders were deleted rather than kept
+alongside it, and `job.decoder` now reports `wav reader`, `mediabunny` or `ffmpeg` honestly.
+
+Verification was the point, not the API: each format was processed in a **fresh browser context**
+with a request log watching for `ffmpeg-core`. M4A/AAC, MP3 and Ogg/Vorbis all completed with
+**0 core requests**; AVI (which mediabunny cannot open) fetched the core and still came back in an
+AVI container; an MP4 had its audio read by mediabunny and then was muxed by ffmpeg.
+
+The remaining research — replacing the muxer too — is written up in `todo.md` §3 rather than
+half-built: `@mediabunny/aac-encoder` (libavcodec WASM, no dependencies) plus WebCodecs Opus would
+cover the containers, but AVI/WMV/FLV would still need ffmpeg, and a second mux implementation would
+only be exercised on whichever path the browser takes.
+
+### Container coverage, and failures that read like sentences
+
+Unmapped video inputs (`wmv`, `flv`, `ogv`, `ts`, `3gp`) used to be routed to MP4, which rejects
+VC-1, FLV1, Theora, MPEG-2 and H.263 — so those files lost their picture and fell back to a WAV.
+They now route to Matroska, the one common container that accepts all of them, with the video still
+copied rather than re-encoded. The accept list and `SUPPORTED_SPECS` grew to match (AAC, OPUS, M4V,
+OGA).
+
+A video with **no audio track** used to fail with `ffmpeg exited with code 1`, which tells a user
+nothing. `explainFailure()` now names that case ("This file has no audio track to clean up.") and
+otherwise appends the last meaningful line of ffmpeg's own output.
+
+### The product is called Hushwing
+
+App copy, `index.html`, the diagnostic log header, the footer and every document now say
+**Hushwing**. The package id, the MCP server id and the repository stay `hushwing-audio`; the header
+mark is a placeholder for the branded wordmark that is coming.
+
+### Verification
+
+- main suite **30/30** against the built bundle (served with isolation headers, not the dev server),
+  zero console errors: 8 jobs through RNNoise, decoder labels `wav reader` / `mediabunny` ×6 /
+  `ffmpeg` ×1, WAV 384 044 B · 48 kHz mono, MP3 311 006 B, FLAC 11 721 026 B, M4A/AAC 11 725 192 B,
+  Ogg 587 556 B, AVI `RIFF`+`AVI `, WebM → WebM, MP4 → MP4, zip 36.4 MB, and the fresh-context
+  audit reporting **0 core requests** for an audio-only queue.
+- bulk suite **17/17**: 28/28 jobs, "27 wav + 1 video·audio", concurrency 1, no stranding, heap
+  +0.4 MB across the batch.
+- One assertion of mine failed first: I checked the AVI's fourcc at offset 4 (where MP4's `ftyp`
+  lives) instead of offset 8, where RIFF puts `AVI `. The file was correct; the test was not.
+
+### Added to the backlog at the user's request
+
+`todo.md` §3 now carries an installable-PWA plan with **Android share-sheet intake**: a manifest plus
+`share_target` (`method: POST`, `multipart/form-data`) and a service worker that stashes the posted
+file locally and hands the studio a queued job, plus `file_handlers`/`launchQueue` for "Open with".
+Chrome on Android is the only browser that delivers files to a share target, it requires an
+installed PWA, and iOS has no share target at all — so the plan says that instead of promising it
+everywhere.

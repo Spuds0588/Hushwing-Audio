@@ -1,9 +1,10 @@
-# Hushwing Audio — TODO / Work Log
+# Hushwing — TODO / Work Log
 
-Last updated: 2026-09-19 (session 5)
-Status: **v1 is complete, live, and studio-only.** The studio is a three-step wizard (add files →
-pick an engine → watch the queue), RNNoise is real WebAssembly, audio formats are decoded without
-ffmpeg, and the static build is deployed to GitHub Pages.
+Last updated: 2026-09-19 (session 6)
+Status: **v1 is complete, live, and studio-only.** The product is **Hushwing** (the repository is
+still `Hushwing-Audio`). The studio is a three-step wizard (add files → pick an engine → watch the
+queue), RNNoise is real WebAssembly, every common audio container is decoded natively, video keeps
+its video, and the static build is deployed to GitHub Pages.
 
 ---
 
@@ -83,15 +84,41 @@ ffmpeg, and the static build is deployed to GitHub Pages.
 - [x] **Audio formats are decoded in JavaScript** (`lib/decode.ts`: WAV reader, `mpg123-decoder`,
       `@wasm-audio-decoders/flac`, all lazy), so a queue of audio makes zero `ffmpeg-core` requests.
       M4A/AAC, Ogg/Vorbis and every video container still go through ffmpeg, and `job.decoder` says
-      which path ran.
+      which path ran. *(Superseded in session 6: one `mediabunny` reader replaced the two
+      single-format WASM decoders — see 1a-3.)*
 - [x] **Per-model inference rate** (`MODEL_SPECS[].inferenceRate`): 16 kHz for the Web Audio chain
       (the band limit is part of the noise reduction), RNNoise's native 48 kHz; delivery is 48 kHz.
 - [x] **A/B switching is a gain ramp**, not a reconnection: one graph with a dry branch and a wet
       branch, crossfaded over 20 ms, and the preview requests a 48 kHz `AudioContext` so RNNoise can
-      join it.
+      join it. *(Removed in session 6: it could not match the delivered file — see 1a-3.)*
 - [x] Verified: main suite **33/33** and bulk **17/17** on the production build, plus a bulk run with
       `BULK_MODEL=rnnoise` (24/24 jobs, heap +0.4 MB) to prove the per-job worklet
       node + `OfflineAudioContext` do not leak.
+
+## 1a-3. Honest preview, native formats, product rename (session 6)
+
+- [x] **The A/B preview is gone, not patched.** The live `AudioWorklet` audition ran at 48 kHz while
+      the batch chain ran the Web Audio engine at 16 kHz, so the audition was audibly not the file.
+      The panel, the session, the worklet (`public/worklets/hushwing-preview.js`) and the queue-row
+      button were deleted, along with `createRnnoisePreviewNode` — RNNoise now has exactly one code
+      path. The suite asserts the preview hooks and the worklet chunk stay gone.
+- [x] **`mediabunny` is the reader.** `lib/decode.ts` parses WAV itself and hands everything else to
+      `mediabunny` (MP4/MOV/MKV/WebM/WAV/MP3/Ogg/FLAC/ADTS/MPEG-TS demux plus WebCodecs decode),
+      which covers MP3, FLAC, **M4A/AAC**, **Ogg/Vorbis** and **Opus**, and reads the audio track out
+      of a video. AVI/WMV/FLV and anything the browser cannot decode still fall through to ffmpeg.
+      `mpg123-decoder` and `@wasm-audio-decoders/flac` were removed rather than kept alongside it.
+- [x] **Container coverage widened.** Unmapped video inputs (`.wmv`, `.flv`, `.ogv`, `.ts`, `.3gp`)
+      are routed to Matroska instead of an MP4 that would reject their codec, so the picture is kept
+      where it used to fall back to audio-only. The accept list and `SUPPORTED_SPECS` were extended
+      (AAC, OPUS, M4V, OGA).
+- [x] **Failures read like sentences.** A video with no audio track now reports "This file has no
+      audio track to clean up." instead of an ffmpeg exit code; other ffmpeg failures carry the
+      last meaningful line of ffmpeg's own output.
+- [x] **The product is called Hushwing.** App copy, `index.html`, the diagnostic log header, the
+      footer and the docs. The package id, the MCP server id and the repository stay
+      `hushwing-audio`. The wordmark in the header is a placeholder until the branded logo lands.
+- [x] Verified: main suite **30/30** and bulk **17/17** against the built bundle, then the same two
+      suites against production.
 
 ## 1b. Bulk / queue workload — checked in session 3
 
@@ -117,9 +144,9 @@ ffmpeg, and the static build is deployed to GitHub Pages.
       workflow`. Note that `gh workflow run` is *also* 403 for this credential, so a deploy is
       triggered by pushing to `main` rather than by dispatching the workflow.
 
-- [ ] **A/B preview on a real device**: headless Chromium is green (worklet ready, meter
-      moving, playhead advancing, click-free A/B switch), but iOS Safari's `AudioWorklet`
-      behaves differently under interruption and still needs a physical device.
+- [ ] **Physical-device run**: everything is verified in Chromium (headless and headed under
+      Xvfb). A real Android/iOS pass over a long recording is still worth doing, mainly to watch
+      memory and the OPFS quota rather than correctness.
 - [ ] **Large-file run**: process a >1 GB video and watch memory. The ffmpeg step is the known
       high-water mark (see limitations).
 - [x] **Cross-origin isolation on the real Pages deployment**: `window.crossOriginIsolated`
@@ -128,16 +155,38 @@ ffmpeg, and the static build is deployed to GitHub Pages.
 
 ## 3. v2 backlog
 
-- [ ] **Decode more formats natively.** Ogg/Vorbis and M4A/AAC still need the 32 MB core. There is
-      no maintained Vorbis decoder in the `@wasm-audio-decoders` family (there is no
-      `ogg-vorbis-decoder` on npm), and `ogg-opus-decoder` drags in a 4 MB ML enhancement model for a
-      format we can already handle with ffmpeg — so both were rejected on purpose rather than by
-      omission.
+- [ ] **Install Hushwing as an app (PWA).** A web app manifest plus a service worker so the studio
+      installs to the home screen and opens offline. Two parts, and the second is the one that
+      matters:
+  - **Manifest + install**: `name`/`short_name` (Hushwing), the themed icons, `display:
+    standalone`, `background_color`/`theme_color` from the `@theme` tokens, and `start_url` pointing
+    at the studio. The service worker should precache the shell *and* the 32 MB `ffmpeg-core` on
+    first idle so a video job works with no network — the core is the only reason the app is not
+    already offline-capable, and `coi-serviceworker` is a second worker that has to coexist with it.
+  - **Android share sheet (Web Share Target).** `share_target` in the manifest with `method: POST`,
+    `enctype: multipart/form-data`, `action: /share` and named file fields. Chrome on Android is the
+    only browser that delivers files this way (Level 2); desktop Chrome still sends text/URLs only,
+    and iOS Safari has no share target at all. It requires an installed PWA. The service worker's
+    `fetch` handler has to stash the posted file (OPFS or `Cache`), then redirect to the studio with
+    the job pre-queued — the file never goes to a server, which is the whole point.
+  - **"Open with" file handling** is the sibling route: `file_handlers` in the manifest plus
+    `launchQueue.setConsumer()` in the app, so an audio or video file opened from a file manager
+    (or another app's "Open with") lands in the queue. It also only fires for an installed PWA.
+- [ ] **Drop ffmpeg for muxing too (researched, session 6).** Reading is already handled by
+      `mediabunny`; writing is the remaining 32 MB. The pieces exist: `@mediabunny/aac-encoder`
+      (libavcodec WASM, no dependencies, ~4.7 MB unpacked) encodes AAC for MP4/MOV/M4A, and Opus for
+      WebM/MKV can come from the browser's own `AudioEncoder`. It would need a hand-built `Output`
+      (copy the video packets through, feed our enhanced PCM into an `AudioSampleSource`) rather than
+      the high-level `Conversion` API, which would re-encode the *original* audio instead of ours.
+      Two things hold it back: AVI (and WMV/FLV) would keep needing ffmpeg anyway, and a second mux
+      implementation would mean the suite only exercises whichever path Chromium takes. Worth doing
+      when video jobs need to start without a 32 MB download.
 - [ ] **Trim the RNNoise frame latency.** Its delay line costs a fixed ~11 ms; compensating would
       mean dropping ~512 samples from the head and padding the tail, which needs a measurement
       rather than an argument.
-- [ ] **A 48 kHz `webaudio` profile.** The JS chain runs at 16 kHz (band-limited, cheap) while the
-      preview runs at 48 kHz, so the audition is slightly brighter than the delivered WAV.
+- [ ] **An engine that honours a chosen sample rate.** `webaudio` renders at 16 kHz by design
+      (the band limit is part of the noise reduction), and delivery is always 48 kHz, so nothing in
+      the UI needs a rate. Only worth revisiting if a user asks for full-band output.
 - [ ] **Verify the self-hosted core path on a deployed build**: `vite.config.ts` emits
       `dist/ffmpeg-core/*` (32 MB) and `lib/ffmpeg.ts` probes for it before falling back to
       unpkg. Confirmed for the asset paths in session 3; worth re-checking after any bundler change.
@@ -146,9 +195,9 @@ ffmpeg, and the static build is deployed to GitHub Pages.
       `SharedArrayBuffer`, now available thanks to COI) so the input never touches RAM.
 - [ ] **Persist the queue** across reloads (OPFS metadata + re-hydration).
 - [ ] **Per-job parameter overrides** (gate threshold, compressor ratio) instead of fixed
-      profiles, wired into both `lib/dsp.ts` and the worklet.
-- [ ] **PWA**: manifest + service worker caching of the ffmpeg core for genuine offline use.
-- [ ] **Code-split** the 512 kB main bundle (framer-motion is most of it).
+      profiles, wired into `lib/dsp.ts` and the worker.
+- [ ] **Code-split** the 500 kB main bundle (framer-motion is most of it; the mediabunny chunk is
+      already lazy at 329 kB).
 - [ ] **Unit tests**: the browser suite covers integration, but `lib/dsp.ts` (gate behaviour,
       resample frame counts) and `lib/filekit.ts` (`parseWav` round trip) are pure and deserve
       fast unit coverage of their own.
@@ -168,5 +217,11 @@ ffmpeg, and the static build is deployed to GitHub Pages.
    feature needs a decision, it needs a place in a step — not another panel on the same screen.
 6. **Engine contract returns samples, not blobs.** Blob creation moved into the pipeline so
    results can stream to OPFS instead of being assembled in memory.
-7. **JavaScript decoders before ffmpeg.** The 32 MB core is a tool, not a requirement — WAV, MP3 and
-   FLAC are decoded in-process and lazily, and everything else falls through to ffmpeg.
+7. **Native decode before ffmpeg.** The 32 MB core is a tool, not a requirement — WAV is parsed in
+   JS, `mediabunny` reads every other common container with the browser's own codecs, and only what
+   neither can open (AVI and friends) reaches ffmpeg. Video muxing still needs it.
+8. **No preview that disagrees with the output.** The live `AudioWorklet` audition ran at 48 kHz on
+   the device context while the batch chain ran at 16 kHz, so it sounded different from the file it
+   was previewing. It was cut rather than patched: the product is drop → engine → queue, and a
+   result is judged by processing the file. A future preview has to be the rendered output, not an
+   approximation of it.

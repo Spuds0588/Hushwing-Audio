@@ -1,4 +1,7 @@
-# Hushwing Audio — Agent & Contributor Guide
+# Hushwing — Agent & Contributor Guide
+
+> The product is **Hushwing**; the repository, package id and MCP server id remain
+> `hushwing-audio`. A branded wordmark logo is coming — the header mark is a placeholder.
 
 This file is the contract for two audiences:
 
@@ -23,23 +26,20 @@ for both the Freebuff hosting panel and GitHub Pages.
 ├── vite.config.ts          base './', server.hmr false
 ├── package.json            bun scripts: dev / build / typecheck / lint / preview / test:e2e
 ├── README.md               pitch, quick start, deploy, gotchas
-├── how-it-works.md         guided tour of the pipeline, DSP and both preview paths
+├── how-it-works.md         guided tour of the pipeline, the engines and format handling
 ├── e2e/hushwing.e2e.mjs    browser suite (see §8)
 ├── e2e/hushwing.bulk.mjs   queue / bulk suite (see §8)
 ├── .github/workflows/      deploy.yml → GitHub Pages
 ├── public/
 │   ├── coi-serviceworker.js     COOP/COEP injection for SharedArrayBuffer
-│   ├── worklets/
-│   │   └── hushwing-preview.js  Pipeline B processor (plain JS, mirrors the `webaudio`
-│   │                            chain in lib/dsp.ts)
 │   ├── mcp.json                 WebMCP discovery document (served at /mcp.json)
 │   └── .nojekyll
 └── src/
     ├── App.tsx             the studio shell: step routing, queue wiring, API install
     ├── components/         Header, Stepper, AddStep, EngineStep, RunStep, JobQueue,
-    │                       AbPreview, DebugLog, ui primitives
+    │                       DebugLog, ui primitives
     ├── lib/                dsp, engine, rnnoise, decode, ffmpeg, filekit, opfs, logger,
-    │                       models, pipeline, preview, batch, hushwing-api
+    │                       models, pipeline, batch, hushwing-api
     ├── store/app.ts        zustand queue, wizard step + URL params
     ├── types/hushwing.ts   domain types
     └── workers/            enhance-worker.ts (Pipeline A)
@@ -75,8 +75,8 @@ for both the Freebuff hosting panel and GitHub Pages.
 2. **One engine contract.** Everything that can clean audio implements
    `{ process(samples: Float32Array, sampleRate: number): Promise<EngineResult> }`:
    - `webaudio` — pure JS, rendered in the worker (`WorkerEngine`), main thread if workers are
-     blocked, and mirrored in the preview worklet. Its inference rate is 16 kHz: the chain is a
-     voice-band chain, and the band limit is part of what removes wideband hiss.
+     blocked. Its inference rate is 16 kHz: the chain is a voice-band chain, and the band limit is
+     part of what removes wideband hiss.
    - `rnnoise` — real WebAssembly (`@sapphi-red/web-noise-suppressor`), rendered through an
      `OfflineAudioContext` in `src/lib/rnnoise.ts`. It is 48 kHz only, and it ignores the worker:
      the browser's audio rendering thread is the cheapest correct place to run it. Expect ~11 ms of
@@ -84,11 +84,11 @@ for both the Freebuff hosting panel and GitHub Pages.
 
    Each model declares the rate it wants in `MODEL_SPECS[].inferenceRate`; `prepareAudio()` in
    `src/lib/pipeline.ts` decodes, resamples to it, and the result is lifted to 48 kHz for delivery.
-3. **`webaudio` DSP has one source of truth.** `src/lib/dsp.ts` is authoritative;
-   `public/worklets/hushwing-preview.js` is a hand-mirrored plain-JS copy because an
-   AudioWorklet module cannot import TypeScript. Change both together. There is no second copy of
-   RNNoise anywhere: both pipelines load the same wasm binary, so the preview cannot drift from the
-   render.
+3. **Each engine has exactly one implementation.** `src/lib/dsp.ts` is the only `webaudio` chain
+   (worker or main thread), and `renderWithRnnoise()` is the only RNNoise path. There is no
+   AudioWorklet mirror of either: the live preview was removed in favour of not shipping a preview
+   that disagrees with the file, so do not reintroduce a second rendering path — a preview has to
+   be the rendered output or it is a lie.
 4. **The logger is synchronous and bounded.** `src/lib/logger.ts` keeps a rolling 250-entry
    buffer, exposes a `useSyncExternalStore` snapshot, and can export a `.txt` diagnostic.
    Never add unbounded arrays.
@@ -107,11 +107,16 @@ for both the Freebuff hosting panel and GitHub Pages.
    a mixed bulk batch meant one guaranteed-to-fail ffmpeg run per audio file — that is what took
    the renderer down at ~20 files before it was fixed. Audio inputs in a `video` batch deliver the
    enhanced WAV and set `job.warning` to say why.
-9. **Audio never loads ffmpeg.** `src/lib/decode.ts` decodes WAV, MP3 and FLAC in JavaScript, so an
-   audio job starts immediately and never fetches the 32 MB core; everything else (M4A/AAC,
-   Ogg/Vorbis, any video container) falls through to ffmpeg, and the job records which one ran in
-   `job.decoder`. `App.tsx` only preloads the core when a queued file actually needs it. Keep the
-   decoders behind dynamic `import()` so a queue of videos never downloads them.
+9. **Decode natively, fall back to ffmpeg.** `src/lib/decode.ts` parses WAV itself and gives
+   everything else to `mediabunny`, which demuxes MP4/MOV/MKV/WebM/MP3/Ogg/FLAC/ADTS/MPEG-TS and
+   decodes with the browser's own WebCodecs decoders — so MP3, FLAC, M4A/AAC, Ogg/Vorbis, Opus and
+   the audio inside a video all start without the 32 MB core. Only what neither can open (AVI, WMV,
+   FLV) reaches ffmpeg. `job.decoder` records the path (`wav reader`, `mediabunny`, `ffmpeg`), and
+   `mayNeedFfmpeg()` is what `App.tsx` uses to decide whether to preload the core. Keep both
+   readers behind dynamic `import()` so a queue of WAVs downloads neither.
+10. **Failures read like sentences.** `explainFailure()` in `src/lib/ffmpeg.ts` turns a non-zero exit
+    into something actionable (a video with no audio track says so; anything else carries the last
+    meaningful line of ffmpeg's output). Never surface a bare exit code to a job error.
 
 ## 4. `window.HushwingAPI` (headless control)
 
@@ -145,13 +150,11 @@ These exact selectors exist on the live page:
 | `[data-mcp-target="added-files"] li[data-job-id]` | The queued-file list on step 1 |
 | `button[data-mcp-action="wizard-next"]` | Step 1 → 2 |
 | `[data-mcp-target="model-selector"][data-model-id="webaudio\|rnnoise\|deepfilternet"]` | Engine card, step 2. A `<button role="radio">`; `data-selected="true"` marks the choice. Disabled when the engine is not implemented |
-| `[data-mcp-target="ab-preview"]` | Live A/B audition. `data-preview-model` says which engine is being auditioned |
 | `button[data-mcp-action="process-queue"]` | Starts processing every queued job (step 2) |
 | `button[data-mcp-action="wizard-back"]` | Step 3 → 1 ("Add more files"), or step 2 → 1 |
 | `button[data-mcp-action="start-over"]` | Purges the queue and its OPFS results, back to step 1 |
 | `[data-mcp-target="batch-progress"]` | Batch progress card, step 3 |
 | `a[data-mcp-action="download-result"][data-job-id="<uuid>"]` | Result download link |
-| `button[data-mcp-action="open-ab-preview"][data-job-id="<uuid>"]` | Opens the A/B panel for a queued job |
 | `button[data-mcp-action="export-zip"]` | Downloads every finished result as a zip |
 | `[data-mcp-target="diagnostics"]` | Diagnostics panel wrapper. Present only while the log is open |
 
@@ -159,11 +162,11 @@ Job rows expose state for polling, including the display name:
 
 ```html
 <li data-job-id="<uuid>" data-status="queued|preparing|processing|completed|error"
-    data-job-name="interview.wav" data-job-model="rnnoise" data-job-decoder="mp3">
+    data-job-name="interview.wav" data-job-model="rnnoise" data-job-decoder="mediabunny">
 ```
 
-`data-job-decoder` is the honest answer to "what actually read this file": `wav reader`, `mp3`,
-`flac`, or `ffmpeg` when the container needed it.
+`data-job-decoder` is the honest answer to "what actually read this file": `wav reader` for WAV,
+`mediabunny` for every container it can open, or `ffmpeg` when only ffmpeg could read it.
 
 ## 6. URL parameters
 
@@ -191,11 +194,11 @@ bunx vite build          # must emit dist/ and exit
 ```
 
 Then confirm the preview reaches ready and that the studio renders. A change that compiles but
-produces a blank page is not done. If you touched `src/lib/dsp.ts`, update
-`public/worklets/hushwing-preview.js` to match; if you touched the wizard, both suites navigate it
-by step.
+produces a blank page is not done. If you touched the wizard, both suites navigate it by step; if you
+touched `src/lib/dsp.ts` or `src/lib/rnnoise.ts`, the worker and the offline audio graph are both
+frozen by the suites.
 
-For anything touching the pipeline, the engine, or the A/B preview, run the browser suite as well:
+For anything touching the pipeline, an engine or the format handling, run the browser suite as well:
 
 ```bash
 bunx playwright install chromium                # once
@@ -204,13 +207,15 @@ PREVIEW_URL=https://<preview-host> bun run test:e2e
 
 `e2e/hushwing.e2e.mjs` drives real Chromium against the live preview down the real flow: it checks
 that step one is the *only* step on screen, drops a generated WAV and follows the wizard to the
-engine step, auditions RNNoise live, then queues a downloaded MP4, an MP3, a FLAC, an Ogg/Vorbis
-file and a WebM recorded in-page. It asserts, per job, which decoder ran and what container, rate
-and channel count came back, then exercises the zip export, the A/B panel from the queue row, the
-URL parameters, `window.HushwingAPI` and cross-origin isolation. It asserts on the app's own
-diagnostics when a job fails. Two flakes to know about: the preview host may serve a cached module
-for a plain URL (cache-bust before trusting a "missing" hook), and `innerText` reflects CSS
-`text-transform`, so assert on `textContent`.
+engine step, then queues a downloaded MP4, an MP3, a FLAC, an Ogg/Vorbis file, an M4A/AAC file, an
+AVI and a WebM recorded in-page. It asserts, per job, which decoder ran and what container, rate and
+channel count came back, audits in a fresh context that an audio-only queue fetches the ffmpeg core
+**zero** times, checks a silent video fails with a sentence, and exercises the zip export, the URL
+parameters, `window.HushwingAPI` and cross-origin isolation. It also fails if the removed preview UI
+or its worklet chunk ever returns. It asserts on the app's own diagnostics when a job fails. Two
+flakes to know about: the preview host may serve a cached module for a plain URL (cache-bust before
+trusting a "missing" hook), and `innerText` reflects CSS `text-transform`, so assert on
+`textContent`.
 
 Run the queue suite too for anything touching the queue, OPFS or ffmpeg:
 
@@ -224,5 +229,5 @@ PREVIEW_URL=https://<preview-host> BULK_MODEL=rnnoise bun run test:bulk   # WebA
 `uploads/` ends up empty while `outputs/` holds one result per job, mid-run arrivals are not
 stranded, the zip matches the results, and heap growth stays bounded. It also proves a mixed batch
 keeps every result in its own kind of container. `BULK_MODEL=rnnoise` is the run that matters after
-changing the WebAssembly engine: it allocates a worklet node and an `OfflineAudioContext` per job,
+changing the WebAssembly engine: it builds an `OfflineAudioContext` and a wasm denoise state per job,
 so a long queue is exactly where a leak would show up.

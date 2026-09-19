@@ -4,11 +4,9 @@ import type { ModelId } from '../types/hushwing'
  * Pure-JS DSP kernels for the `webaudio` engine.
  *
  * Everything here is allocation-light, streaming and dependency-free, which is
- * what lets the *same* algorithms run in three places:
+ * what lets the *same* kernels run in two places:
  *
- * - `src/workers/enhance-worker.ts` (Pipeline A, offline batch render)
- * - `public/worklets/hushwing-preview.js` (Pipeline B, real-time preview —
- *   a hand-mirrored copy, because an AudioWorklet module cannot import TS)
+ * - `src/workers/enhance-worker.ts` (offline batch render)
  * - `src/lib/engine.ts` on the main thread (fallback when workers are blocked)
  *
  * Kernels are stateful and block-size agnostic: state carries across calls, so
