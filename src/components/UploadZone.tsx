@@ -11,6 +11,8 @@ interface UploadZoneProps {
   disabled?: boolean
   /** Called after files are added when `?autostart=true` is active. */
   onAutostart?: () => void
+  /** Starts the queue. Lives here so the start control is always on the page. */
+  onProcess: () => void
 }
 
 /**
@@ -19,10 +21,16 @@ interface UploadZoneProps {
  * The output follows the source (video stays video, audio becomes a 48 kHz WAV),
  * so there is no format control — only the engine choice, which is a real decision.
  */
-export function UploadZone({ disabled = false, onAutostart }: UploadZoneProps) {
+export function UploadZone({ disabled = false, onAutostart, onProcess }: UploadZoneProps) {
   const model = useAppStore((state) => state.model)
   const autostart = useAppStore((state) => state.autostart)
+  const jobs = useAppStore((state) => state.jobs)
+  const processing = useAppStore((state) => state.processing)
   const setModel = useAppStore((state) => state.setModel)
+
+  const pending = jobs.filter(
+    (job) => job.status === 'queued' || job.status === 'preparing'
+  ).length
 
   const inputRef = useRef<HTMLInputElement>(null)
   const [dragOver, setDragOver] = useState(false)
@@ -164,6 +172,18 @@ export function UploadZone({ disabled = false, onAutostart }: UploadZoneProps) {
           {spec?.description}
           {autostart ? ' Autostart is on: adding files starts processing immediately.' : ''}
         </p>
+
+        <Button
+          data-mcp-action="process-queue"
+          onClick={onProcess}
+          disabled={disabled || processing || pending === 0}
+        >
+          {processing
+            ? 'Processing…'
+            : pending > 0
+              ? `Process ${pending} file${pending === 1 ? '' : 's'}`
+              : 'Process'}
+        </Button>
       </div>
     </div>
   )

@@ -5,9 +5,9 @@ import { UploadZone } from './components/UploadZone'
 import { JobQueue } from './components/JobQueue'
 import { DebugLog } from './components/DebugLog'
 import { AbPreview } from './components/AbPreview'
-import { Badge, Button, Progress } from './components/ui'
+import { Badge, Progress } from './components/ui'
 import { applyUrlParams, parseUrlParams, useAppStore } from './store/app'
-import { isPending, purgeJobFiles, runJob, runQueue } from './lib/pipeline'
+import { purgeJobFiles, runJob, runQueue } from './lib/pipeline'
 import { installHushwingAPI } from './lib/hushwing-api'
 import { availableModelIds } from './lib/models'
 import { preloadFFmpeg } from './lib/ffmpeg'
@@ -109,16 +109,14 @@ export default function App() {
             </p>
           </div>
 
-          <UploadZone disabled={processing} onAutostart={handleProcessQueue} />
+          <UploadZone
+            disabled={processing}
+            onAutostart={handleProcessQueue}
+            onProcess={handleProcessQueue}
+          />
         </motion.section>
 
-        {jobs.length > 0 && (
-          <BatchStatus
-            jobs={jobs}
-            processing={processing}
-            onProcessQueue={handleProcessQueue}
-          />
-        )}
+        {jobs.length > 0 && <BatchProgress jobs={jobs} processing={processing} />}
 
         {previewJob?.original && (
           <AbPreview
@@ -156,19 +154,10 @@ export default function App() {
 }
 
 /**
- * The one piece of chrome a long job needs: how far the batch has got, and the
- * button that starts it. Deliberately not a dashboard — nothing to configure.
+ * The one piece of chrome a long job needs: how far the batch has got. The start
+ * control lives with the dropzone, so this only ever appears once there is work.
  */
-function BatchStatus({
-  jobs,
-  processing,
-  onProcessQueue,
-}: {
-  jobs: Job[]
-  processing: boolean
-  onProcessQueue: () => void
-}) {
-  const pending = jobs.filter((job) => isPending(job) && job.status !== 'processing').length
+function BatchProgress({ jobs, processing }: { jobs: Job[]; processing: boolean }) {
   const active = jobs.find((job) => job.status === 'preparing' || job.status === 'processing')
   const finished = jobs.filter((job) => job.status === 'completed' || job.status === 'error').length
   const failed = jobs.filter((job) => job.status === 'error').length
@@ -189,29 +178,15 @@ function BatchStatus({
       animate={{ opacity: 1, y: 0 }}
       className="rounded-2xl border border-border bg-[var(--color-surface-1)] p-5"
     >
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge variant={processing ? 'info' : failed > 0 ? 'error' : 'success'}>
-            {processing ? 'processing' : failed > 0 ? 'finished with errors' : 'done'}
-          </Badge>
-          <span className="text-sm text-[var(--color-ink-1)]">
-            {finished} of {jobs.length} file{jobs.length === 1 ? '' : 's'}
-            {rendered > 0 ? ` · ${formatBytes(rendered)} ready` : ''}
-            {failed > 0 ? ` · ${failed} failed` : ''}
-          </span>
-        </div>
-
-        <Button
-          data-mcp-action="process-queue"
-          onClick={onProcessQueue}
-          disabled={processing || pending === 0}
-        >
-          {processing
-            ? 'Processing…'
-            : pending > 0
-              ? `Process ${pending} file${pending === 1 ? '' : 's'}`
-              : 'All done'}
-        </Button>
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant={processing ? 'info' : failed > 0 ? 'error' : 'success'}>
+          {processing ? 'processing' : failed > 0 ? 'finished with errors' : 'done'}
+        </Badge>
+        <span className="text-sm text-[var(--color-ink-1)]">
+          {finished} of {jobs.length} file{jobs.length === 1 ? '' : 's'}
+          {rendered > 0 ? ` · ${formatBytes(rendered)} ready` : ''}
+          {failed > 0 ? ` · ${failed} failed` : ''}
+        </span>
       </div>
 
       <div className="mt-4">
