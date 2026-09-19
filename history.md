@@ -249,15 +249,31 @@ or page errors, `crossOriginIsolated === true`** (so the COI service-worker path
 production build). `mcp.json`, the worklet and the 32 MB `ffmpeg-core.wasm` all served 200 from
 the same origin, i.e. a deployed build really does fetch nothing but itself.
 
-### Pages source switched (post-script)
+### Pages source switched, and production verified (post-script)
 
 The Pages source was switched to **GitHub Actions** (`build_type` is now `workflow`). The
 repository-scoped credential cannot make that change (403), and `gh workflow run` is refused for
 the same reason, so the deployment is triggered by pushing to `main`.
 
+The next push published the real build — the live document now references `./assets/index-*.js`
+and `./assets/index-*.css` instead of `/src/main.tsx` — and the legacy `pages-build-deployment`
+pipeline stopped running.
+
+Verified against **https://spuds0588.github.io/Hushwing-Audio/** with the same suite run headed:
+
+- **21/21 checks passed**, no console or page errors, `crossOriginIsolated === true` — the COI
+  service-worker path works on real Pages hosting, which is the PRD §2.1 requirement that static
+  hosting was the risk.
+- WAV `384 044 B · RIFF · 48 000 Hz · mono · 16-bit`; WebM remuxed to WebM (`1a45dfa3`);
+  MP4 `5 823 203 B · ftyp`; `.zip` `6 300 903 B`; worklet A/B preview ready, meter peaked 53%,
+  playhead reached 2.81 s.
+- `/mcp.json`, `/worklets/hushwing-preview.js`, `/coi-serviceworker.js`, `/.nojekyll` and the
+  32 129 114-byte `ffmpeg-core.wasm` all serve 200.
+- Self-hosting confirmed, not assumed: a `processMedia()` run against production fetched
+  `ffmpeg-core.js` and `ffmpeg-core.wasm` from `spuds0588.github.io` and made **zero third-party
+  requests**, so the "no CDN, nothing leaves your machine" claim holds on the deployed site.
+
 ### Still not verified
 
 - Cloud pickers (no OAuth keys in this environment).
 - A/B preview on a physical iOS device.
-- Cross-origin isolation on the *live* Pages deployment (the production build is verified locally;
-the custom domain/CDN path is not).

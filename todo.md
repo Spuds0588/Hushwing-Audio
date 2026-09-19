@@ -14,10 +14,14 @@ processes local audio and video end to end, and the static build is GitHub Pages
   `mcp.json`, `worklets/`, `coi-serviceworker.js`) with relative paths.
 - Preview commands saved: install `bun install`, dev `bun run dev` (5173), build `bunx vite build`.
 - Freebuff preview reaches ready; every module in the graph transforms without error.
-- **Verified end to end in a real browser (session 2):** `bun run test:e2e` drives headless
-  Chromium through the whole product and passes 21/21 — WAV, MP4 and WebM jobs all complete and
-  the delivered bytes are inspected, the A/B worklet preview plays and switches, the `.zip`
-  export works, and the URL params / `window.HushwingAPI` behave.
+- **Verified end to end in a real browser (session 2):** `bun run test:e2e` drives Chromium through
+  the whole product and passes 21/21 — WAV, MP4 and WebM jobs all complete and the delivered bytes
+  are inspected, the A/B worklet preview plays and switches, the `.zip` export works, and the URL
+  params / `window.HushwingAPI` behave. Run headed (`HEADED=1` under `xvfb-run`) it also produces a
+  screenshot.
+- **Live in production:** <https://spuds0588.github.io/Hushwing-Audio/> serves the built bundle and
+  passes the same suite 21/21, with `crossOriginIsolated === true`, the ffmpeg core loaded from its
+  own origin and no third-party requests.
 
 ## 1. Done in v1
 
