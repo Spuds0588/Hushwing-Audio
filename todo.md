@@ -16,11 +16,12 @@ its video, and the static build is deployed to GitHub Pages.
   `mcp.json`, `worklets/`, `coi-serviceworker.js`) with relative paths.
 - Preview commands saved: install `bun install`, dev `bun run dev` (5173), build `bunx vite build`.
 - Freebuff preview reaches ready; every module in the graph transforms without error.
-- **Verified end to end in a real browser (session 5):** `bun run test:e2e` walks the wizard in
-  Chromium and passes 33/33 — WAV, MP3, FLAC, Ogg/Vorbis, MP4 and WebM jobs all complete through the
-  RNNoise engine, every delivered result's bytes are inspected, each job reports which decoder read
-  it, the live A/B audition plays and switches, the `.zip` export works, and the URL params /
-  `window.HushwingAPI` behave. Run headed (`HEADED=1` under `xvfb-run`) it also produces a screenshot.
+- **Verified end to end in a real browser (session 6):** `bun run test:e2e` walks the wizard in
+  Chromium and passes 30/30 — WAV, MP3, FLAC, Ogg/Vorbis, M4A/AAC, AVI, MP4 and WebM jobs all
+  complete through the RNNoise engine, every delivered result's bytes are inspected, each job reports
+  which reader produced its PCM, an audio-only queue is audited in a fresh context for fetching the
+  ffmpeg core (zero requests), the `.zip` export works, and the URL params / `window.HushwingAPI`
+  behave. Run headed (`HEADED=1` under `xvfb-run`) it also produces a screenshot.
 - **Live in production:** <https://spuds0588.github.io/Hushwing-Audio/> serves the built bundle and
   passes the same suite 21/21, with `crossOriginIsolated === true`, the ffmpeg core loaded from its
   own origin and no third-party requests.
@@ -118,7 +119,8 @@ its video, and the static build is deployed to GitHub Pages.
       footer and the docs. The package id, the MCP server id and the repository stay
       `hushwing-audio`. The wordmark in the header is a placeholder until the branded logo lands.
 - [x] Verified: main suite **30/30** and bulk **17/17** against the built bundle, then the same two
-      suites against production.
+      suites against production (headed Chromium, zero console errors, `crossOriginIsolated === true`,
+      24/24 jobs in the bulk run, heap +0.4 MB). Committed as `e764364`, deployed in 34 s.
 
 ## 1b. Bulk / queue workload — checked in session 3
 

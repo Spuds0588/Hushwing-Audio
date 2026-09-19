@@ -554,6 +554,12 @@ mark is a placeholder for the branded wordmark that is coming.
   +0.4 MB across the batch.
 - One assertion of mine failed first: I checked the AVI's fourcc at offset 4 (where MP4's `ftyp`
   lives) instead of offset 8, where RIFF puts `AVI `. The file was correct; the test was not.
+- **In production**, at <https://spuds0588.github.io/Hushwing-Audio/> after `e764364` deployed in
+  34 s: headed Chromium **30/30**, zero console errors, `crossOriginIsolated === true`, screenshot
+  captured; bulk suite **17/17** (24/24 jobs, "23 wav + 1 video·audio", concurrency 1, heap +0.4 MB).
+  The live `index.html` serves `Hushwing` as the title, `/mcp.json` is version 1.3.0 with
+  `['wav reader','mediabunny','ffmpeg']` as the decoder enum, and `/worklets/hushwing-preview.js`
+  correctly 404s.
 
 ### Added to the backlog at the user's request
 
