@@ -48,7 +48,14 @@ processes local audio and video end to end, and the static build is GitHub Pages
       fixed three real bugs: a UMD/ESM ffmpeg-core mismatch that blocked every job, a mux that
       forced VP8/VP9 into MP4, and job errors that carried no stack.
 
-## 2. Open — needs a key or a browser check
+## 2. Open — needs a key, a click, or a browser check
+
+- [ ] **Flip the Pages source to GitHub Actions** (one click): GitHub → Settings → Pages →
+      Source → **GitHub Actions**. The repo is currently `build_type: legacy` (`main:/`), so the
+      Jekyll pipeline republishes the raw repository root after every push and overrides the
+      artifact the `Deploy to GitHub Pages` workflow produced. That workflow is already green, so
+      the correct build goes live as soon as the source is switched. The repository-scoped
+      credential cannot make this change (403), so it must be done by hand.
 
 - [ ] **Google Drive / OneDrive**: the code paths are complete but unverified because no OAuth
       keys exist. Set `VITE_GOOGLE_CLIENT_ID` + `VITE_GOOGLE_API_KEY` (Drive Picker API enabled)

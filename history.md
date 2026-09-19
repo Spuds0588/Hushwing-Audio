@@ -230,8 +230,28 @@ No console or page errors. `crossOriginIsolated` became `true` once the service 
 - Assert on the `data-status` hook for job state rather than scraping rendered copy — the
   text-based status trail printed `?` for every poll.
 
+### Production (GitHub Pages)
+
+- Pushed `bb9fed5` to `main`. The `Deploy to GitHub Pages` workflow built and deployed `dist/`
+on the first try (build 14 s, deploy 9 s).
+- **The live URL does not serve that artifact yet.** `https://spuds0588.github.io/Hushwing-Audio/`
+returns an `index.html` that loads `/src/main.tsx`, and `/mcp.json`,
+`/worklets/hushwing-preview.js` and `/ffmpeg-core/*` all 404. Pages is configured
+`build_type: legacy` with `source: main:/`, so the legacy Jekyll pipeline rebuilds the repository
+root on every push and wins over `actions/deploy-pages`.
+- The setting cannot be changed with the repository-scoped credential
+(`PUT /repos/Spuds0588/Hushwing-Audio/pages` → `403 Resource not accessible by integration`).
+One click is required: **Settings → Pages → Source: GitHub Actions** — which is what the README's
+"Deploying to GitHub Pages" section already tells a human to do.
+- Since production was unreachable, the built bundle was verified directly instead: `dist/` served
+from a static file server, then this same suite run **headed** against it — **21/21, no console
+or page errors, `crossOriginIsolated === true`** (so the COI service-worker path does work in a
+production build). `mcp.json`, the worklet and the 32 MB `ffmpeg-core.wasm` all served 200 from
+the same origin, i.e. a deployed build really does fetch nothing but itself.
+
 ### Still not verified
 
 - Cloud pickers (no OAuth keys in this environment).
 - A/B preview on a physical iOS device.
-- Cross-origin isolation on a live Pages deployment.
+- Cross-origin isolation on the *live* Pages deployment (the production build is verified locally;
+the custom domain/CDN path is not).
