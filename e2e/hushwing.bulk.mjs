@@ -154,9 +154,8 @@ try {
     })
   }
 
-  // One mixed drop through a single `setInputFiles`: the folder-drag case. Videos
-  // have to survive a global output format of `video`, and audio inputs in that
-  // same batch must fall back to WAV with a warning rather than failing.
+  // One mixed drop through a single `setInputFiles`: the folder-drag case. There is
+  // no format control any more, so each file has to come back as its own kind.
   const mp4Path = process.env.E2E_MP4 ?? join(here, '.cache', 'sample.mp4')
   let videos = 0
   if (process.env.BULK_VIDEO === '0') {
@@ -170,7 +169,6 @@ try {
     }
   }
 
-  await page.selectOption('select[data-mcp-target="output-format"]', 'video')
   await page.setInputFiles('input[data-mcp-action="upload"]', drop)
   await sleep(500)
 
@@ -304,31 +302,20 @@ try {
     `outputs/ holds ${listings.outputs.length} of ${expected}`
   )
 
-  // In a mixed drop the global output format is `video`, so the audio inputs cannot
-  // produce video. They must still deliver the enhanced WAV, with a warning rather
-  // than a failure — and the video input must still come back as a video.
-  const warnings = apiJobs.filter((job) => job.warning)
-  const audioCount = expected - videos - 0
-  record(
-    'a video-format batch degrades honestly for its audio inputs',
-    errored.length === 0 && warnings.length >= audioCount,
-    `${errored.length} failed · ${warnings.length}/${audioCount} audio jobs reported why they are WAV (e.g. "${warnings[0]?.warning ?? '—'}")`
-  )
-
-  if (videos > 0) {
-    const videoRow = settled.find((r) => r.name === 'bulk-clip.mp4')
-    const videoResult = videoRow
-      ? await page.evaluate((id) => {
-          const anchor = document.querySelector(`a[data-mcp-action="download-result"][data-job-id="${id}"]`)
-          return anchor ? anchor.getAttribute('download') : null
-        }, videoRow.id)
-      : null
-    record(
-      'the video in the batch came back as a video',
-      Boolean(videoResult && videoResult.endsWith('.mp4')),
-      `${videoResult ?? 'no result link'}`
+  // No format control exists, so every result has to follow its own source: the
+  // audio files stay WAV, the video stays a video, in one mixed batch.
+  const resultNames = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('a[data-mcp-action="download-result"]')).map((anchor) =>
+      anchor.getAttribute('download')
     )
-  }
+  )
+  const wavResults = resultNames.filter((name) => name?.endsWith('.wav')).length
+  const videoResults = resultNames.filter((name) => name && !name.endsWith('.wav')).length
+  record(
+    "every result follows its own source (video stays video, audio becomes WAV)",
+    wavResults === expected - videos && videoResults === videos,
+    `${wavResults} wav + ${videoResults} video·audio, of ${expected} results`
+  )
 
   /* --------------------------------------------------------- 4. downloads -- */
   const spotCheck = async (name) => {

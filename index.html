@@ -17,8 +17,9 @@
 
       `coi-serviceworker` injects COOP: same-origin + COEP: credentialless so
       SharedArrayBuffer becomes available on static hosts such as GitHub Pages,
-      which cannot set response headers themselves. Credentialless (rather than
-      require-corp) is what keeps the Google / OneDrive picker iframes usable.
+      which cannot set response headers themselves. Credentialless rather than
+      require-corp keeps any cross-origin subresource loadable, and costs nothing
+      here — the app fetches only its own origin in any case.
 
       The script only registers in a top-level window, so it is inert inside the
       sandboxed preview frame, and `?coi=off` disables it entirely.

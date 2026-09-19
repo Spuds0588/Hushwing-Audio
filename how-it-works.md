@@ -8,6 +8,11 @@ The whole app is client-side. There is no server to call, no upload step to reas
 place for media to escape: a job is just a `File` that goes into the Origin Private File System and
 comes back out as a different `File`.
 
+It is also one page with one decision in it. Files are dragged in, an engine is picked, and the
+queue reports progress; the output follows the source (a video keeps its picture with the enhanced
+track muxed back in, audio comes back as a 48 kHz WAV) so there is no format to choose and no
+import source to configure.
+
 ## 1. The shape of a job
 
 `runJob()` in `src/lib/pipeline.ts` is the spine. Every job walks the same path, reporting progress
@@ -231,8 +236,9 @@ document, which needs `COOP: same-origin` and `COEP: credentialless` — headers
 GitHub Pages cannot send. `public/coi-serviceworker.js` (vendored from the `coi-serviceworker`
 package) registers a service worker that injects them. It only registers in a top-level window, so it
 stays inert inside embedded previews and cannot cause a reload loop there, and `?coi=off` disables it
-outright. `credentialless` rather than `require-corp` is what keeps the Google/OneDrive picker iframes
-usable. The diagnostics panel reports the resulting state as a "Cross-origin isolated ✓/✗" badge.
+outright. `credentialless` rather than `require-corp` keeps any cross-origin subresource loadable,
+which costs nothing here because the app only ever fetches its own origin. The diagnostics panel
+reports the resulting state as a "Cross-origin isolated ✓/✗" badge.
 
 **The logger is synchronous and bounded.** `src/lib/logger.ts` keeps a rolling 250-entry buffer and
 exposes it through `useSyncExternalStore`, so logging costs nothing when the panel is closed and the
@@ -247,13 +253,20 @@ agent-drivable (contract in [`AGENTS.md`](./AGENTS.md) §4–§7):
 - `window.HushwingAPI` — `getModels()`, `processMedia()`, `queueMedia()`, `getJobs()`,
   `downloadDebugLog()`.
 - semantic `data-mcp-*` hooks on the real controls, plus `data-job-id` / `data-status` on job rows.
-- URL parameters `?model=`, `?autostart=true`, `?debug=true`, `?coi=off`, and the `#studio` hash.
+- URL parameters `?model=`, `?autostart=true`, `?debug=true`, `?coi=off`. The studio is the only
+  page, so the `#studio` hash older links use does nothing (harmlessly).
 - `public/mcp.json`, served at `/mcp.json`, so WebMCP clients can discover the tool surface at load.
 
 `e2e/hushwing.e2e.mjs` uses exactly this surface, which is why the suite is short enough to read and
 still covers the whole product: generated WAV, real H.264/AAC MP4, in-page VP8/Opus WebM, container
 and header assertions on every delivered result, the zip export, the worklet preview (ready, meter,
 playhead, A↔B, teardown), the URL parameters and the API.
+
+`e2e/hushwing.bulk.mjs` (`bun run test:bulk`) covers the queue instead of one file: 20+ files dropped
+at once, three more dropped mid-drain, and assertions on the invariants that matter at that size —
+concurrency pinned to 1, progress never regressing, `uploads/` emptied per job while `outputs/` keeps
+exactly one result each, no stranded arrivals, a zip whose entry count matches, and bounded heap
+growth.
 
 ## 7. Where to start reading
 
@@ -273,8 +286,9 @@ playhead, A↔B, teardown), the URL parameters and the API.
   UI labels it that way. Vendoring the real WASM weights behind the same id is a drop-in follow-up —
   the id is kept so the API and saved settings do not break when that lands.
 - **DeepFilterNet 3 is not implemented.** The option renders disabled rather than pretending.
-- **Cloud import is one-way.** Google Drive / OneDrive import into OPFS; results are never written
-  back, which is a PRD constraint and a deliberate one.
+- **Nothing but local files, on purpose.** Cloud import (Drive/OneDrive) and import-from-URL were
+  removed: they added keys, OAuth setup and a first-run decision without improving the core loop of
+  dropping files in and watching them clean up.
 - **iOS is unproven.** The worklet and the visibility handling exist for it, but the A/B preview has
   not been verified on a physical device, where Safari interrupts `AudioWorklet` differently.
 - **First load is ~32 MB** for the ffmpeg core. It is fetched lazily (only once there is work to do)

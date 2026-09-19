@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { v4 as uuidv4 } from 'uuid'
-import type { Job, JobStatus, ModelId, OutputFormat, AppUrlParams } from '../types/hushwing'
+import type { Job, JobStatus, ModelId, AppUrlParams } from '../types/hushwing'
 import { logger } from '../lib/logger'
 import { fileNameOf, isVideo } from '../lib/filekit'
 import { isModelId } from '../lib/models'
@@ -8,7 +8,6 @@ import { isModelId } from '../lib/models'
 interface AppState {
   /** Model used for newly queued jobs. */
   model: ModelId
-  outputFormat: OutputFormat
   /** Mirror of the `?debug=true` URL flag. */
   showDebug: boolean
   /** Mirror of the `?autostart=true` URL flag. */
@@ -18,12 +17,11 @@ interface AppState {
   jobs: Job[]
 
   setModel: (model: ModelId) => void
-  setOutputFormat: (format: OutputFormat) => void
   setShowDebug: (value: boolean) => void
   setAutostart: (value: boolean) => void
   setProcessing: (value: boolean) => void
 
-  enqueue: (file: File | Blob, model: ModelId, outputFormat: OutputFormat) => Job
+  enqueue: (file: File | Blob, model: ModelId) => Job
   updateJob: (id: string, patch: Partial<Job>) => void
   setJobStatus: (id: string, status: JobStatus, error?: string) => void
   markJobResult: (id: string, url: string) => void
@@ -34,34 +32,37 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set) => ({
   model: 'webaudio',
-  outputFormat: 'wav',
   showDebug: false,
   autostart: false,
   processing: false,
   jobs: [],
 
   setModel: (model) => set({ model }),
-  setOutputFormat: (outputFormat) => set({ outputFormat }),
   setShowDebug: (showDebug) => set({ showDebug }),
   setAutostart: (autostart) => set({ autostart }),
   setProcessing: (processing) => set({ processing }),
 
-  enqueue: (file, model, outputFormat) => {
+  enqueue: (file, model) => {
+    // The output follows the source, and there is no control for it: a video keeps
+    // its picture with the enhanced track muxed back in, audio comes back as a
+    // 48 kHz WAV. Asking the user to choose would only let them choose wrong.
+    const sourceKind: Job['sourceKind'] = isVideo(file) ? 'video' : 'audio'
+
     const job: Job = {
       id: uuidv4(),
       original: file,
       sourceName: fileNameOf(file) ?? 'pasted-media',
-      sourceKind: isVideo(file) ? 'video' : 'audio',
+      sourceKind,
       status: 'queued',
       model,
-      outputFormat,
+      outputFormat: sourceKind === 'video' ? 'video' : 'wav',
       progress: 0,
       stage: 'Queued',
       createdAt: Date.now(),
     }
 
     set((state) => ({ jobs: [...state.jobs, job] }))
-    logger.info(`queued ${job.id} (${model})`)
+    logger.info(`queued ${job.id} (${model}, ${job.sourceKind})`)
     return job
   },
 

@@ -169,25 +169,61 @@ async function inspectDownload(jobId) {
 }
 
 try {
-  /* --------------------------------------------------------------- landing -- */
+  /* ------------------------------------------------------ the studio is it -- */
   await page.goto(`${BASE}/?coi=off`, { waitUntil: 'networkidle' })
   const heading = (await page.textContent('h1')) ?? ''
-  record('landing page renders its hero', /without uploading/i.test(heading), heading.slice(0, 48))
+  record('the studio is the page', /without uploading/i.test(heading), heading.slice(0, 48))
 
-  const engineCards = await page.$$eval('h3', (nodes) =>
-    nodes.filter((node) => /Web Audio|denoiser|DeepFilterNet/i.test(node.innerText)).length
+  // The product is drop → engine → progress. A format control, a URL import box or a
+  // navigation to a landing page would all be extra decisions for the user.
+  const streamlined = await page.evaluate(() => ({
+    outputFormat: Boolean(document.querySelector('[data-mcp-target="output-format"]')),
+    urlImport: Boolean(document.querySelector('input[type="url"], [data-mcp-action="import-url"]')),
+    cloudImport: /OneDrive|Google Drive/i.test(document.body.textContent ?? ''),
+    navLinks: document.querySelectorAll('nav a, header nav button').length,
+  }))
+  record(
+    'no output-format, URL-import or cloud controls remain',
+    !streamlined.outputFormat && !streamlined.urlImport && !streamlined.cloudImport,
+    JSON.stringify(streamlined)
   )
-  record('landing lists all three engines', engineCards >= 3, `${engineCards} cards`)
 
-  await page.click('button:has-text("Open the studio")')
-  await page.waitForSelector('button[data-mcp-action="process-queue"]', { timeout: 15_000 })
-  record('landing CTA opens the studio', page.url().includes('#studio'), page.url().split('/').pop())
+  // Automated stand-in for "does it look right": a blank or unstyled page fails here.
+  const layout = await page.evaluate(() => {
+    const dropzone = document.querySelector('[aria-label="Add audio or video files to the queue"]')
+    const box = dropzone?.getBoundingClientRect()
+    const heading = document.querySelector('h1')
+    const headingSize = heading ? parseFloat(getComputedStyle(heading).fontSize) : 0
+    return {
+      dropzoneWidth: Math.round(box?.width ?? 0),
+      dropzoneHeight: Math.round(box?.height ?? 0),
+      headingSize,
+      horizontalOverflow: document.documentElement.scrollWidth - window.innerWidth,
+      styled: getComputedStyle(document.body).backgroundColor !== 'rgba(0, 0, 0, 0)',
+    }
+  })
+  record(
+    'the page renders styled, with a usable drop target and no horizontal overflow',
+    layout.dropzoneWidth > 300 &&
+      layout.dropzoneHeight > 150 &&
+      layout.headingSize >= 24 &&
+      layout.horizontalOverflow <= 1,
+    JSON.stringify(layout)
+  )
+
+  const engines = await page.$$eval('select[data-mcp-target="model-selector"] option', (options) =>
+    options.map((option) => ({ value: option.value, disabled: option.disabled }))
+  )
+  record(
+    'the engine selector lists every engine and disables the unimplemented one',
+    engines.length === 3 && engines.some((engine) => engine.value === 'deepfilternet' && engine.disabled),
+    engines.map((engine) => `${engine.value}${engine.disabled ? ' (disabled)' : ''}`).join(', ')
+  )
 
   /* ------------------------------------------------------------ agent hooks -- */
   const hooks = await page.evaluate(() => ({
     upload: Boolean(document.querySelector('input[data-mcp-action="upload"]')),
     model: Boolean(document.querySelector('select[data-mcp-target="model-selector"]')),
-    format: Boolean(document.querySelector('select[data-mcp-target="output-format"]')),
     queue: Boolean(document.querySelector('button[data-mcp-action="process-queue"]')),
     api: typeof window.HushwingAPI === 'object',
   }))
@@ -208,8 +244,8 @@ try {
   await sleep(300)
 
   if (mp4) {
+    // No format is selected anywhere: a dropped video must come back as a video.
     await page.selectOption('select[data-mcp-target="model-selector"]', 'rnnoise')
-    await page.selectOption('select[data-mcp-target="output-format"]', 'video')
     await page.setInputFiles('input[data-mcp-action="upload"]', {
       name: 'clip.mp4',
       mimeType: 'video/mp4',

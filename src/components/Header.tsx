@@ -2,12 +2,10 @@ import { useAppStore } from '../store/app'
 import { Badge, Button } from './ui'
 
 interface HeaderProps {
-  view: 'landing' | 'dashboard'
-  onNavigate: (view: 'landing' | 'dashboard') => void
   onToggleLog: () => void
 }
 
-export function Header({ view, onNavigate, onToggleLog }: HeaderProps) {
+export function Header({ onToggleLog }: HeaderProps) {
   const jobs = useAppStore((state) => state.jobs)
   const processing = useAppStore((state) => state.processing)
   const showDebug = useAppStore((state) => state.showDebug)
@@ -24,17 +22,12 @@ export function Header({ view, onNavigate, onToggleLog }: HeaderProps) {
         ? { variant: 'warn' as const, label: `${queued} queued` }
         : completed > 0
           ? { variant: 'success' as const, label: `${completed} done` }
-          : { variant: 'default' as const, label: 'idle' }
+          : { variant: 'default' as const, label: 'ready' }
 
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-[var(--color-surface-0)]/85 backdrop-blur">
-      <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
-        <button
-          type="button"
-          onClick={() => onNavigate('landing')}
-          className="flex items-center gap-2.5 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-          aria-label="Hushwing Audio — back to the home page"
-        >
+      <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
+        <div className="flex items-center gap-2.5">
           <svg
             width="28"
             height="28"
@@ -58,12 +51,10 @@ export function Header({ view, onNavigate, onToggleLog }: HeaderProps) {
               local voice isolation · no uploads
             </span>
           </span>
-        </button>
+        </div>
 
-        <nav className="flex items-center gap-2">
-          <Badge variant={status.variant} className="hidden sm:inline-flex">
-            {status.label}
-          </Badge>
+        <div className="flex items-center gap-2">
+          <Badge variant={status.variant}>{status.label}</Badge>
 
           <Button
             variant="ghost"
@@ -74,15 +65,7 @@ export function Header({ view, onNavigate, onToggleLog }: HeaderProps) {
           >
             {showDebug ? 'Hide log' : 'Show log'}
           </Button>
-
-          <Button
-            variant={view === 'dashboard' ? 'secondary' : 'primary'}
-            size="sm"
-            onClick={() => onNavigate(view === 'dashboard' ? 'landing' : 'dashboard')}
-          >
-            {view === 'dashboard' ? 'Home' : 'Open studio'}
-          </Button>
-        </nav>
+        </div>
       </div>
     </header>
   )

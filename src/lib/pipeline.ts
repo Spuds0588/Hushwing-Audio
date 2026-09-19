@@ -5,19 +5,15 @@ import { createEngine } from './engine'
 import { encodeWavChunks, fileNameOf, isVideo, parseWav, suggestedOutputFilename } from './filekit'
 import { openOPFSWriter, readDataFromOPFS, removeFromOPFS } from './opfs'
 import { resample } from './dsp'
-import type { Job, ModelId, OutputFormat } from '../types/hushwing'
+import type { Job, ModelId } from '../types/hushwing'
 
 /** Models run at 16 kHz; results are lifted back to 48 kHz for delivery. */
 export const INFERENCE_RATE = 16_000
 export const DELIVERY_RATE = 48_000
 
-/** Add a file to the queue without starting work. */
-export function enqueueFile(
-  file: File | Blob,
-  model: ModelId,
-  outputFormat: OutputFormat
-): Job {
-  return useAppStore.getState().enqueue(file, model, outputFormat)
+/** Add a file to the queue without starting work. The output format follows the source. */
+export function enqueueFile(file: File | Blob, model: ModelId): Job {
+  return useAppStore.getState().enqueue(file, model)
 }
 
 /** True while a job still needs to be picked up by the queue runner. */
@@ -100,11 +96,10 @@ export async function runJob(jobId: string): Promise<Job> {
     let finalExtension = '.wav'
     let warning: string | undefined
 
-    // Only a video source can be muxed. Asking ffmpeg to put a WAV into a video
-    // container fails every time, so in a mixed batch a global `video` format used
-    // to buy one guaranteed-to-fail ffmpeg run per audio file — the opposite of
-    // what a bulk run needs. Audio inputs simply deliver the enhanced WAV.
-    if (outputFormat === 'video' && sourceKind === 'video') {
+    // `outputFormat` is derived at enqueue from the source kind, so this is only
+    // ever true for a real video. Muxing an audio file into a video container fails
+    // every time, and in a bulk batch that cost one wasted ffmpeg run per file.
+    if (outputFormat === 'video') {
       report({ progress: 80, stage: 'Muxing video' })
       const wavBlob = await readDataFromOPFS(wavPath, { asBlob: true })
       if (!(wavBlob instanceof Blob)) throw new Error('The enhanced WAV could not be read back')
@@ -127,9 +122,6 @@ export async function runJob(jobId: string): Promise<Job> {
         finalPath = wavPath
         finalExtension = '.wav'
       }
-    } else if (outputFormat === 'video') {
-      warning = 'No video track in this source — exported the enhanced audio as WAV.'
-      logger.info(`job ${jobId}: ${warning}`)
     }
 
     const outputName = suggestedOutputFilename(job.sourceName, finalExtension)
@@ -179,12 +171,8 @@ export async function runJob(jobId: string): Promise<Job> {
 }
 
 /** Convenience: queue a file and immediately process it (used by the headless API). */
-export async function processFile(
-  file: File | Blob,
-  model: ModelId,
-  outputFormat: OutputFormat
-): Promise<Job> {
-  const job = enqueueFile(file, model, outputFormat)
+export async function processFile(file: File | Blob, model: ModelId): Promise<Job> {
+  const job = enqueueFile(file, model)
   return runJob(job.id)
 }
 

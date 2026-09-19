@@ -33,11 +33,10 @@ for both the Freebuff hosting panel and GitHub Pages.
 │   ├── mcp.json                 WebMCP discovery document (served at /mcp.json)
 │   └── .nojekyll
 └── src/
-    ├── App.tsx             landing/dashboard shell, queue wiring, API install
-    ├── components/         Landing, Header, UploadZone, JobQueue, DebugLog, AbPreview,
-    │                       CloudImport, ui primitives
+    ├── App.tsx             the studio page, queue wiring, API install
+    ├── components/         Header, UploadZone, JobQueue, DebugLog, AbPreview, ui primitives
     ├── lib/                dsp, engine, ffmpeg, filekit, opfs, logger, models, pipeline,
-    │                       preview, batch, cloud-import, hushwing-api
+    │                       preview, batch, hushwing-api
     ├── store/app.ts        zustand queue + URL params
     ├── types/hushwing.ts   domain types
     └── workers/            enhance-worker.ts (Pipeline A)
@@ -56,6 +55,10 @@ for both the Freebuff hosting panel and GitHub Pages.
 - **All processing is client-side.** There is no backend, no upload and no telemetry. If a
   change would send user media anywhere, it is wrong.
 - Server state does not exist, so do not add a data-fetching layer.
+- **The product has exactly one decision in it: which engine.** Files are dropped in, the output
+  follows the source (video → video with the enhanced track muxed back, audio → 48 kHz WAV), and the
+  queue reports progress. Do not add output-format pickers, import-from-URL fields, cloud pickers,
+  landing pages or dashboards — they were all removed on purpose.
 
 ## 3. Architecture invariants
 
@@ -94,7 +97,7 @@ Installed on boot. Agents can drive processing without touching the DOM.
 
 ```js
 const models = await window.HushwingAPI.getModels()   // ['webaudio', 'rnnoise']
-const blob = await window.HushwingAPI.processMedia({ file, model: 'webaudio', outputFormat: 'wav' })
+const blob = await window.HushwingAPI.processMedia({ file, model: 'webaudio' })
 const jobId = await window.HushwingAPI.queueMedia({ file })
 const jobs = window.HushwingAPI.getJobs()
 window.HushwingAPI.downloadDebugLog()
@@ -103,8 +106,8 @@ window.HushwingAPI.downloadDebugLog()
 | Method | Signature | Notes |
 | --- | --- | --- |
 | `getModels()` | `() => Promise<ModelId[]>` | Only models that are actually implemented |
-| `processMedia(opts)` | `({ file, model?, outputFormat? }) => Promise<Blob>` | Resolves with the enhanced media; rejects on failure |
-| `queueMedia(opts)` | `({ file, model?, outputFormat? }) => Promise<string>` | Returns the job id |
+| `processMedia(opts)` | `({ file, model? }) => Promise<Blob>` | Resolves with the enhanced media; rejects on failure. No format option — the container follows the source |
+| `queueMedia(opts)` | `({ file, model? }) => Promise<string>` | Returns the job id |
 | `getJobs()` | `() => JobSummary[]` | `id`, `status`, `name`, `progress`, `stage`, `resultUrl`, `error`, `warning` |
 | `downloadDebugLog()` | `() => void` | Downloads `hushwing-debug-<ts>.txt` |
 
@@ -116,7 +119,6 @@ These exact selectors exist on the live page:
 | --- | --- |
 | `input[data-mcp-action="upload"]` | Hidden file input. Agents set `.files` / dispatch `change` |
 | `select[data-mcp-target="model-selector"]` | Model chooser. Values: `webaudio`, `rnnoise` |
-| `select[data-mcp-target="output-format"]` | `wav` or `video` |
 | `button[data-mcp-action="process-queue"]` | Starts processing every queued job |
 | `a[data-mcp-action="download-result"][data-job-id="<uuid>"]` | Result download link |
 | `[data-mcp-target="diagnostics"]` | Diagnostics panel wrapper. Present only while the log is open |
@@ -137,7 +139,9 @@ Job rows expose state for polling, including the display name:
 | `?debug=true` | Opens the on-screen diagnostics log |
 | `?coi=off` | Skips the cross-origin isolation service worker |
 
-The hash `#studio` opens the dashboard directly.
+There is no separate dashboard: the studio is the only page, so the `#studio` hash that older
+links use is redundant but harmless. Do **not** reintroduce a landing page or a format control —
+the product is drag in files, pick an engine, watch the queue.
 
 ## 7. `mcp.json`
 
@@ -151,8 +155,8 @@ bun tsc -b --noEmit      # must be clean
 bunx vite build          # must emit dist/ and exit
 ```
 
-Then confirm the preview reaches ready and that the landing page **and** the studio render. A
-change that compiles but produces a blank page is not done. If you touched
+Then confirm the preview reaches ready and that the studio renders. A change that compiles but
+produces a blank page is not done. If you touched
 `src/lib/dsp.ts`, update `public/worklets/hushwing-preview.js` to match.
 
 For anything touching the pipeline, the engine, or the A/B preview, run the browser suite as well:

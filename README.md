@@ -20,7 +20,7 @@ backend, no quota and no telemetry.
 
 | Area | State |
 | --- | --- |
-| Landing page + studio (Tailwind v4, Framer Motion) | ✅ |
+| One page, and it is the studio — drop, engine, progress (Tailwind v4, Framer Motion) | ✅ |
 | Drag & drop, queue with per-job progress, stage labels, retry | ✅ |
 | Video → 16 kHz mono WAV, enhance, mux back into the source container | ✅ `ffmpeg.wasm` |
 | `webaudio` engine — high-pass → soft-knee compressor → soft limiter | ✅ |
@@ -29,7 +29,7 @@ backend, no quota and no telemetry.
 | Pipeline B: real-time A/B preview through an `AudioWorklet` | ✅ |
 | OPFS staging + streamed results, `.zip` batch export | ✅ |
 | `window.HushwingAPI`, semantic DOM hooks, URL params, `mcp.json` | ✅ |
-| Google Drive / OneDrive import | ⚙️ needs OAuth keys — see below |
+| No format control to get wrong — video stays video, audio becomes 48 kHz WAV | ✅ |
 | DeepFilterNet 3 | ⏳ planned, the option is disabled rather than faked |
 
 Verified end to end in Chromium against both the dev preview and the live Pages deployment — see
@@ -43,7 +43,7 @@ Verified end to end in Chromium against both the dev preview and the live Pages 
 
 ```bash
 bun install
-bun run dev          # http://localhost:5173  ·  append #studio for the dashboard
+bun run dev          # http://localhost:5173 — the studio is the whole app
 ```
 
 The first load pulls a ~32 MB `ffmpeg.wasm` core. It is only fetched when there is actually work
@@ -66,7 +66,7 @@ to do (see `preloadFFmpeg`), and the browser caches it afterwards.
 
 ```
 index.html ─ coi-serviceworker → cross-origin isolation
-  └── src/App.tsx ──────── landing page + studio shell, queue wiring, API install
+  └── src/App.tsx ──────── the studio: dropzone, batch status, queue, API install
         ├── store/app.ts ......... zustand queue — the single source of truth
         ├── lib/dsp.ts ........... DSP kernels: high-pass, gate, compressor, limiter, resample
         ├── lib/engine.ts ........ HushwingEngine contract; worker engine + main-thread fallback
@@ -76,9 +76,9 @@ index.html ─ coi-serviceworker → cross-origin isolation
         ├── lib/pipeline.ts ...... stage → extract → enhance → resample → stream → mux
         ├── lib/preview.ts ....... Pipeline B session (peaks, worklet graph, A/B, meter)
         ├── lib/hushwing-api.ts .. window.HushwingAPI
-        ├── lib/{models,batch,cloud-import,logger}.ts
-        ├── components/ .......... Landing, Header, UploadZone, JobQueue, DebugLog, AbPreview,
-        │                          CloudImport, ui primitives
+        ├── lib/{models,batch,logger}.ts
+        ├── components/ .......... Header, UploadZone, JobQueue, DebugLog, AbPreview,
+        │                          ui primitives
         └── workers/enhance-worker.ts     Pipeline A
 public/
   ├── worklets/hushwing-preview.js   Pipeline B processor — plain JS mirror of lib/dsp.ts
@@ -129,8 +129,8 @@ BULK_COUNT=50 BULK_VIDEO=0 PREVIEW_URL=https://<host> bun run test:bulk   # bigg
 3. files dropped *while the batch is draining* are picked up, not stranded at `queued`;
 4. OPFS hygiene: `uploads/` is empty afterwards (each staging copy is deleted in the job's
    `finally`) and `outputs/` holds exactly one result per job;
-5. a mixed drop under one global output format degrades honestly — video inputs still produce
-   video, audio inputs return the enhanced WAV *and say why* in `job.warning`;
+5. every result follows its own source — in a mixed batch the audio files come back as WAV and the
+   video as video, with no setting to get it wrong;
 6. the `.zip` contains one entry per result, and "Clear finished" purges the whole batch;
 7. heap growth across the batch stays bounded (it prints the peak, so a leak is visible).
 
@@ -168,10 +168,9 @@ All optional — without them the app still processes local files. Set them in
 
 | Variable | Purpose |
 | --- | --- |
-| `VITE_GOOGLE_CLIENT_ID` | OAuth client id that enables the Google Drive picker |
-| `VITE_GOOGLE_API_KEY` | Drive Picker API key (required alongside the client id) |
-| `VITE_ONEDRIVE_CLIENT_ID` | Azure app registration (redirect URI: this site's origin) |
 | `VITE_FFMPEG_CORE_BASE` | Force a specific `ffmpeg-core.js` / `.wasm` location, overriding the probe |
+
+That is the whole list — there is no OAuth, database or API key, because the app talks to nothing.
 
 ### Where the ffmpeg core comes from
 
@@ -216,7 +215,7 @@ depends on it being there.
 
 ```js
 await window.HushwingAPI.getModels()            // ['webaudio', 'rnnoise'] — only what really runs
-await window.HushwingAPI.processMedia({ file, model: 'webaudio', outputFormat: 'wav' })  // → Blob
+await window.HushwingAPI.processMedia({ file, model: 'webaudio' })  // → Blob, container follows the source
 await window.HushwingAPI.queueMedia({ file })   // → job id
 window.HushwingAPI.getJobs()                    // id, status, name, progress, stage, resultUrl, error
 window.HushwingAPI.downloadDebugLog()
@@ -226,7 +225,6 @@ window.HushwingAPI.downloadDebugLog()
 | --- | --- |
 | `input[data-mcp-action="upload"]` | Hidden file input — agents set `.files` and dispatch `change` |
 | `select[data-mcp-target="model-selector"]` | `webaudio` \| `rnnoise` |
-| `select[data-mcp-target="output-format"]` | `wav` \| `video` |
 | `button[data-mcp-action="process-queue"]` | Process every queued job |
 | `a[data-mcp-action="download-result"][data-job-id="<uuid>"]` | Result download link |
 | `[data-mcp-target="diagnostics"]` | Diagnostics panel (present only while the log is open) |
@@ -254,8 +252,6 @@ server state, so do not add a data-fetching layer.
   load to be dominated by the 32 MB core download.
 - The `rnnoise` id is kept for API compatibility, but this build ships an adaptive gate/expander
   DSP profile, not the RNNoise WASM weights. The UI says so.
-- Cloud pickers need the OAuth keys above; the import-to-local constraint from the PRD is enforced
-  by design.
 - The A/B preview has not been verified on a physical iOS device, where Safari interrupts
   `AudioWorklet` differently.
 

@@ -3,18 +3,21 @@ import { availableModelIds, isModelId } from './models'
 import { downloadLogs } from './logger'
 import { useAppStore } from '../store/app'
 import { isActive } from './pipeline'
-import type { ModelId, OutputFormat } from '../types/hushwing'
+import type { ModelId } from '../types/hushwing'
 
 export interface ProcessMediaOptions {
   file: File | Blob
   model?: ModelId
-  outputFormat?: OutputFormat
 }
 
 export interface HushwingAPI {
   /** Models that are actually implemented in this build. */
   getModels(): Promise<ModelId[]>
-  /** Clean one file and resolve with the enhanced media. */
+  /**
+   * Clean one file and resolve with the enhanced media. The output follows the
+   * source — a video comes back as a video, audio as a 48 kHz WAV — so there is no
+   * format option to pass.
+   */
   processMedia(options: ProcessMediaOptions): Promise<Blob>
   /** Queue one file without awaiting the result. Returns the job id. */
   queueMedia(options: ProcessMediaOptions): Promise<string>
@@ -45,8 +48,8 @@ const api: HushwingAPI = {
     return availableModelIds()
   },
 
-  async processMedia({ file, model = 'webaudio', outputFormat = 'wav' }) {
-    const job = await processFile(file, model, outputFormat)
+  async processMedia({ file, model = 'webaudio' }) {
+    const job = await processFile(file, model)
 
     if (job.status !== 'completed' || !job.resultUrl) {
       throw new Error(job.error ?? `Job ${job.id} did not complete`)
@@ -59,9 +62,9 @@ const api: HushwingAPI = {
     return response.blob()
   },
 
-  async queueMedia({ file, model = 'webaudio', outputFormat = 'wav' }) {
+  async queueMedia({ file, model = 'webaudio' }) {
     const store = useAppStore.getState()
-    const job = store.enqueue(file, model, outputFormat)
+    const job = store.enqueue(file, model)
     return job.id
   },
 

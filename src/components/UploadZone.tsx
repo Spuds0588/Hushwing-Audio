@@ -2,9 +2,9 @@ import { useCallback, useRef, useState, type DragEvent } from 'react'
 import { useAppStore } from '../store/app'
 import { enqueueFile } from '../lib/pipeline'
 import { ACCEPT_ATTRIBUTE } from '../lib/filekit'
-import { MODEL_SPECS } from '../lib/models'
+import { MODEL_SPECS, getModelSpec } from '../lib/models'
 import { logger } from '../lib/logger'
-import type { ModelId, OutputFormat } from '../types/hushwing'
+import type { ModelId } from '../types/hushwing'
 import { Button, cx } from './ui'
 
 interface UploadZoneProps {
@@ -13,12 +13,16 @@ interface UploadZoneProps {
   onAutostart?: () => void
 }
 
+/**
+ * The whole start of the product: drop files, pick an engine. Nothing else.
+ *
+ * The output follows the source (video stays video, audio becomes a 48 kHz WAV),
+ * so there is no format control — only the engine choice, which is a real decision.
+ */
 export function UploadZone({ disabled = false, onAutostart }: UploadZoneProps) {
   const model = useAppStore((state) => state.model)
-  const outputFormat = useAppStore((state) => state.outputFormat)
   const autostart = useAppStore((state) => state.autostart)
   const setModel = useAppStore((state) => state.setModel)
-  const setOutputFormat = useAppStore((state) => state.setOutputFormat)
 
   const inputRef = useRef<HTMLInputElement>(null)
   const [dragOver, setDragOver] = useState(false)
@@ -30,7 +34,7 @@ export function UploadZone({ disabled = false, onAutostart }: UploadZoneProps) {
 
       const store = useAppStore.getState()
       for (const file of list) {
-        enqueueFile(file, store.model, store.outputFormat)
+        enqueueFile(file, store.model)
       }
 
       logger.info(`added ${list.length} file(s) to the queue`)
@@ -49,8 +53,10 @@ export function UploadZone({ disabled = false, onAutostart }: UploadZoneProps) {
     [addFiles, disabled]
   )
 
+  const spec = getModelSpec(model)
+
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-4">
       <div
         onDragOver={(event) => {
           event.preventDefault()
@@ -73,11 +79,11 @@ export function UploadZone({ disabled = false, onAutostart }: UploadZoneProps) {
         }}
         aria-label="Add audio or video files to the queue"
         className={cx(
-          'flex flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed px-5 py-10 text-center transition-colors',
+          'flex cursor-pointer flex-col items-center justify-center gap-3 rounded-3xl border-2 border-dashed px-6 py-14 text-center transition-colors',
           disabled && 'cursor-not-allowed opacity-60',
           dragOver
             ? 'border-accent bg-[var(--color-surface-2)]'
-            : 'border-border bg-[var(--color-surface-1)]/50 hover:bg-[var(--color-surface-2)]/60'
+            : 'border-border bg-[var(--color-surface-1)]/50 hover:border-accent/60 hover:bg-[var(--color-surface-2)]/60'
         )}
       >
         <input
@@ -95,14 +101,14 @@ export function UploadZone({ disabled = false, onAutostart }: UploadZoneProps) {
 
         <span
           className={cx(
-            'flex h-14 w-14 items-center justify-center rounded-2xl border border-border bg-[var(--color-surface-2)] transition-colors',
+            'flex h-16 w-16 items-center justify-center rounded-2xl border border-border bg-[var(--color-surface-2)] transition-colors',
             dragOver ? 'text-accent' : 'text-[var(--color-ink-muted)]'
           )}
           aria-hidden="true"
         >
           <svg
-            width="26"
-            height="26"
+            width="28"
+            height="28"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -116,22 +122,27 @@ export function UploadZone({ disabled = false, onAutostart }: UploadZoneProps) {
           </svg>
         </span>
 
-        <p className="text-sm font-medium text-[var(--color-ink-0)]">
-          {dragOver ? 'Drop to add to the queue' : 'Drag and drop audio or video'}
+        <p className="text-base font-medium text-[var(--color-ink-0)]">
+          {dragOver ? 'Drop to add to the queue' : 'Drag in your audio or video'}
         </p>
-        <p className="text-xs text-[var(--color-ink-muted)]">
-          WAV · MP3 · M4A · FLAC · OGG · MP4 · MOV · MKV · WEBM · AVI
+        <p className="max-w-md text-xs leading-relaxed text-[var(--color-ink-muted)]">
+          Drop as many as you like — they queue up and process one at a time. WAV · MP3 · M4A ·
+          FLAC · OGG · MP4 · MOV · MKV · WEBM · AVI
         </p>
 
         <Button variant="secondary" size="sm" className="mt-1" disabled={disabled}>
           Browse files
         </Button>
+
+        <p className="text-[11px] text-[var(--color-ink-muted)]">
+          Video stays video · audio comes back as a 48 kHz WAV · nothing is uploaded
+        </p>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <label className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-3 rounded-2xl border border-border bg-[var(--color-surface-1)]/60 p-4 sm:flex-row sm:items-center sm:justify-between">
+        <label className="flex items-center gap-3">
           <span className="text-xs font-medium tracking-wide text-[var(--color-ink-muted)] uppercase">
-            Model
+            Engine
           </span>
           <select
             data-mcp-target="model-selector"
@@ -140,37 +151,20 @@ export function UploadZone({ disabled = false, onAutostart }: UploadZoneProps) {
             onChange={(event) => setModel(event.target.value as ModelId)}
             className="rounded-xl border border-border bg-[var(--color-surface-2)] px-3 py-2 text-sm text-[var(--color-ink-0)] focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30 disabled:opacity-60"
           >
-            {MODEL_SPECS.map((spec) => (
-              <option key={spec.id} value={spec.id} disabled={!spec.ready}>
-                {spec.label}
-                {spec.ready ? '' : ' — coming soon'}
+            {MODEL_SPECS.map((option) => (
+              <option key={option.id} value={option.id} disabled={!option.ready}>
+                {option.label}
+                {option.ready ? '' : ' — coming soon'}
               </option>
             ))}
           </select>
         </label>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-xs font-medium tracking-wide text-[var(--color-ink-muted)] uppercase">
-            Export
-          </span>
-          <select
-            data-mcp-target="output-format"
-            value={outputFormat}
-            disabled={disabled}
-            onChange={(event) => setOutputFormat(event.target.value as OutputFormat)}
-            className="rounded-xl border border-border bg-[var(--color-surface-2)] px-3 py-2 text-sm text-[var(--color-ink-0)] focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30 disabled:opacity-60"
-          >
-            <option value="wav">Enhanced WAV (48 kHz)</option>
-            <option value="video">Video with enhanced audio</option>
-          </select>
-        </label>
+        <p className="max-w-xl text-xs leading-relaxed text-[var(--color-ink-muted)]">
+          {spec?.description}
+          {autostart ? ' Autostart is on: adding files starts processing immediately.' : ''}
+        </p>
       </div>
-
-      <p className="text-xs text-[var(--color-ink-muted)]">
-        {autostart
-          ? 'Autostart is on: adding files begins processing immediately.'
-          : 'Nothing is uploaded. Files are read and processed inside this browser tab.'}
-      </p>
     </div>
   )
 }
