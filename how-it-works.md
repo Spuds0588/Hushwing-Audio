@@ -8,10 +8,11 @@ The whole app is client-side. There is no server to call, no upload step to reas
 place for media to escape: a job is just a `File` that goes into the Origin Private File System and
 comes back out as a different `File`.
 
-It is also one page with one decision in it, arranged as a **three-step wizard**: add files, pick an
-engine, watch the queue. Only the current step is on screen. The output follows the source (a video
-keeps its picture with the enhanced track muxed back in, audio comes back as a 48 kHz WAV) so there
-is no format to choose and no import source to configure.
+It is also **one page with one decision in it**: a drop target, an engine choice and the queue, all
+on screen at once (`main[data-mcp-target="studio"]`). A file dropped while a batch is draining joins
+that same queue. The output follows the source (a video keeps its picture with the enhanced track
+muxed back in, audio comes back as a 48 kHz WAV) so there is no format to choose and no import
+source to configure.
 
 ## 1. The shape of a job
 
@@ -267,16 +268,19 @@ agent-drivable (contract in [`AGENTS.md`](./AGENTS.md) §4–§7):
 - `window.HushwingAPI` — `getModels()`, `processMedia()`, `queueMedia()`, `getJobs()`,
   `downloadDebugLog()`.
 - semantic `data-mcp-*` hooks on the real controls, plus `data-job-id` / `data-status` on job rows.
-- the wizard itself: `main[data-wizard-step]`, `[data-mcp-target="wizard-step"][data-step]`,
-  `[data-mcp-target="model-selector"][data-model-id]`.
+- the studio itself: `main[data-mcp-target="studio"]`,
+  `button[data-mcp-action="process-queue"]`,
+  `[data-mcp-target="model-selector"][data-model-id]`, and `[data-mcp-target="build-marker"]` for
+the revision the page is running.
 - URL parameters `?model=`, `?autostart=true`, `?debug=true`, `?coi=off`. The studio is the only
   page, so the `#studio` hash older links use does nothing (harmlessly).
 - `public/mcp.json`, served at `/mcp.json`, so WebMCP clients can discover the tool surface at load.
 
 `e2e/hushwing.e2e.mjs` uses exactly this surface, which is why the suite is short enough to read and
-still covers the whole product: it walks the wizard (and asserts that step one is the *only* step on
-screen), then queues a generated WAV, a real H.264/AAC MP4, an MP3, a FLAC, an Ogg/Vorbis file, an
-M4A/AAC file, an AVI and an in-page VP8/Opus WebM. Every delivered result is checked for container,
+still covers the whole product: it asserts the whole studio is on one page (drop target, engine
+cards, Process control and queue at once, with no wizard tab left behind), then queues a generated
+WAV, a real H.264/AAC MP4, an MP3, a FLAC, an Ogg/Vorbis file, an M4A/AAC file, an AVI and an
+in-page VP8/Opus WebM. Every delivered result is checked for container,
 rate and channels, and every job is checked for which decoder read it — `wav reader` for WAV,
 `mediabunny` for MP3/FLAC/Ogg/M4A and for the audio inside MP4/WebM, `ffmpeg` only for AVI. It then
 audits in a fresh context that an audio-only queue fetches the ffmpeg core zero times, and that a
@@ -297,8 +301,9 @@ growth.
 | work on containers or codecs | `src/lib/ffmpeg.ts` → `muxTargetFor()`, `listEncoders()`, `explainFailure()` |
 | work on decoding or formats | `src/lib/decode.ts` (WAV parser + `mediabunny` reader), `src/lib/filekit.ts` (accept list, specs) |
 | add an engine | `src/types/hushwing.ts`, `src/lib/models.ts`, `createEngine()` in `src/lib/engine.ts`, then both pipelines |
-| add UI or state | `src/store/app.ts` first — the queue and the wizard step are the source of truth |
-| change the flow | `src/components/{Stepper,AddStep,EngineStep,RunStep}.tsx`, composed by `src/App.tsx` |
+| add UI or state | `src/store/app.ts` first — the queue is the source of truth |
+| change the page | `src/App.tsx`, composing `src/components/{Dropzone,EnginePicker,JobQueue}.tsx` |
+| check which build is live | `src/lib/build.ts` — the commit baked in at build time, shown in the footer |
 | make it faster | the ffmpeg RAM buffer (§4), then code-splitting the 500 kB main bundle |
 
 ## 8. Known limits, and the honest state of the engines

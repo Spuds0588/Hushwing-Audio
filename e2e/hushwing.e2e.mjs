@@ -165,7 +165,9 @@ page.on('console', (message) => {
   if (message.type() === 'error') consoleErrors.push(`console: ${message.text()}`)
 })
 
-const stepOf = () => page.getAttribute('main', 'data-wizard-step')
+/** The studio is one page, so this is the readiness check every step of the suite uses. */
+const studioReady = () =>
+  page.waitForSelector('main[data-mcp-target="studio"]', { timeout: 20_000 })
 
 async function jobRows() {
   return page.$$eval('li[data-job-id]', (rows) =>
@@ -180,21 +182,9 @@ async function jobRows() {
   )
 }
 
-/** The queue lives on step 3, so make sure we are looking at it before reading. */
-async function goToStep(target) {
-  if ((await stepOf()) === target) return
-  await page.click(`[data-mcp-target="wizard-step"][data-step="${target}"]`)
-  await page.waitForFunction(
-    (value) => document.querySelector('main')?.dataset.wizardStep === value,
-    target,
-    { timeout: 10_000 }
-  )
-}
-
 async function waitForSettled(expected, timeoutMs = 600_000) {
   const deadline = Date.now() + timeoutMs
   for (;;) {
-    await goToStep('run')
     const rows = await jobRows()
     if (
       rows.length >= expected &&
@@ -237,33 +227,45 @@ async function inspectDownload(jobId) {
 }
 
 try {
-  /* --------------------------------------------------- step 1: add files -- */
+  /* ------------------------------------------------------ the one page -- */
   await page.goto(`${BASE}/?coi=off#studio`, { waitUntil: 'networkidle' })
+  await studioReady()
 
   const heading = (await page.textContent('h1')) ?? ''
   record('the studio is the page', /without uploading/i.test(heading), heading.slice(0, 48))
 
-  // The whole point of the wizard: one step at a time. Everything the old single
-  // page showed at once must be absent until its step is reached.
-  const firstStep = await page.evaluate(() => ({
-    step: document.querySelector('main')?.getAttribute('data-wizard-step'),
-    steps: document.querySelectorAll('[data-mcp-target="wizard-step"]').length,
+  // The studio is a single page: the drop target, the engine choice, the process
+  // control and the queue are all on screen at once. This is the first thing that
+  // breaks if the wizard — or any of the other removed UI — sneaks back in.
+  const firstPaint = await page.evaluate(() => ({
+    studio: document.querySelector('main')?.getAttribute('data-mcp-target'),
     engineCards: document.querySelectorAll('[data-mcp-target="model-selector"]').length,
+    processQueue: Boolean(document.querySelector('button[data-mcp-action="process-queue"]')),
+    upload: Boolean(document.querySelector('input[data-mcp-action="upload"]')),
     abPreview: Boolean(document.querySelector('[data-mcp-target="ab-preview"]')),
+    wizardTabs: document.querySelectorAll('[data-mcp-target="wizard-step"]').length,
     jobRows: document.querySelectorAll('li[data-job-id]').length,
     jobQueueHeading: /Job queue/i.test(document.body.textContent ?? ''),
-    batchProgress: Boolean(document.querySelector('[data-mcp-target="batch-progress"]')),
+    buildMarker: (document.querySelector('[data-mcp-target="build-marker"]')?.textContent ?? '').trim(),
   }))
   record(
-    'only step one is on screen (no engine cards, queue or progress yet)',
-    firstStep.step === 'add' &&
-      firstStep.steps === 3 &&
-      firstStep.engineCards === 0 &&
-      !firstStep.abPreview &&
-      firstStep.jobRows === 0 &&
-      !firstStep.jobQueueHeading &&
-      !firstStep.batchProgress,
-    JSON.stringify(firstStep)
+    'the whole studio is on one page (drop target, engines, process control, queue)',
+    firstPaint.studio === 'studio' &&
+      firstPaint.engineCards === 3 &&
+      firstPaint.processQueue &&
+      firstPaint.upload &&
+      !firstPaint.abPreview &&
+      firstPaint.wizardTabs === 0 &&
+      firstPaint.jobRows === 0 &&
+      firstPaint.jobQueueHeading,
+    JSON.stringify(firstPaint)
+  )
+  // Either a built bundle (the short commit Vite injected) or the dev fallback —
+  // this suite runs against both a preview and a deployed build, so both are valid.
+  record(
+    'the footer names the build the page is running',
+    /^build (dev|[0-9a-f]{7})\b/.test(firstPaint.buildMarker),
+    firstPaint.buildMarker
   )
 
   // Automated stand-in for "does it look right": a blank or unstyled page fails here.
@@ -293,10 +295,12 @@ try {
   /* ------------------------------------------------------------ agent hooks -- */
   const hooks = await page.evaluate(() => ({
     upload: Boolean(document.querySelector('input[data-mcp-action="upload"]')),
-    steps: Boolean(document.querySelector('[data-mcp-target="wizard-step"][data-step="engine"]')),
+    engineCards: Boolean(document.querySelector('[data-mcp-target="model-selector"][data-model-id="webaudio"]')),
+    processQueue: Boolean(document.querySelector('button[data-mcp-action="process-queue"]')),
+    startOver: Boolean(document.querySelector('button[data-mcp-action="start-over"]')),
     api: typeof window.HushwingAPI === 'object',
   }))
-  record('DOM hooks + HushwingAPI present on step one', Object.values(hooks).every(Boolean), JSON.stringify(hooks))
+  record('DOM hooks + HushwingAPI present on load', Object.values(hooks).every(Boolean), JSON.stringify(hooks))
 
   const models = await page.evaluate(() => window.HushwingAPI.getModels())
   record(
@@ -305,19 +309,7 @@ try {
     JSON.stringify(models)
   )
 
-  /* --------------------------------------------------------- step 1 → 2 -- */
-  const wav = makeWav()
-  await page.setInputFiles('input[data-mcp-action="upload"]', {
-    name: 'interview.wav',
-    mimeType: 'audio/wav',
-    buffer: wav,
-  })
-  await page.waitForFunction(() => document.querySelector('main')?.dataset.wizardStep === 'engine', null, {
-    timeout: 10_000,
-  })
-  record('adding a file advances to the engine step', (await stepOf()) === 'engine', await stepOf())
-
-  /* ------------------------------------------------------ step 2: engine -- */
+  /* ----------------------------------------------------------- engine list -- */
   const cards = await page.$$eval('[data-mcp-target="model-selector"]', (nodes) =>
     nodes.map((node) => ({
       id: node.dataset.modelId,
@@ -326,9 +318,23 @@ try {
     }))
   )
   record(
-    'the engine step lists every engine and disables the unimplemented one',
+    'the engine picker lists every engine and disables the unimplemented one',
     cards.length === 3 && cards.some((card) => card.id === 'deepfilternet' && card.disabled),
     cards.map((card) => `${card.id}${card.disabled ? ' (disabled)' : ''}`).join(', ')
+  )
+
+  /* ------------------------------------------------------------ the drop -- */
+  const wav = makeWav()
+  await page.setInputFiles('input[data-mcp-action="upload"]', {
+    name: 'interview.wav',
+    mimeType: 'audio/wav',
+    buffer: wav,
+  })
+  await page.waitForSelector('li[data-job-id][data-status="queued"]', { timeout: 10_000 })
+  record(
+    'dropping a file puts it straight into the on-screen queue',
+    (await jobRows()).length === 1 && Boolean(await page.$('main[data-mcp-target="studio"]')),
+    `${(await jobRows()).length} row(s)`
   )
 
   await page.click('[data-mcp-target="model-selector"][data-model-id="rnnoise"]')
@@ -353,12 +359,7 @@ try {
     JSON.stringify(previewGone)
   )
 
-  /* -------------------------------------------------- step 1 again: rest -- */
-  await page.click('button[data-mcp-action="wizard-back"]')
-  await page.waitForFunction(() => document.querySelector('main')?.dataset.wizardStep === 'add', null, {
-    timeout: 10_000,
-  })
-
+  /* --------------------------------------------------------- the rest -- */
   const webmBase64 = await page.evaluate(async () => {
     const canvas = document.createElement('canvas')
     canvas.width = 320
@@ -433,40 +434,29 @@ try {
   ].filter(Boolean)
 
   for (const upload of uploads) {
-    // Adding a file ends step 1, so walk back to it before each drop.
-    await goToStep('add')
+    // No navigation any more: every drop lands in the queue that is already on screen.
     await page.setInputFiles('input[data-mcp-action="upload"]', upload)
     await sleep(250)
   }
 
   const expectedJobs = uploads.length + 1
-  // The added-files list is step 1, and every drop moved us to step 2.
-  await goToStep('add')
-  const added = await page.$$eval('[data-mcp-target="added-files"] li', (nodes) =>
-    nodes.map((node) => node.getAttribute('data-job-id'))
-  )
+  const queued = await jobRows()
   record(
-    'every fixture lands in the added-files list',
-    added.length === expectedJobs,
-    `${added.length}/${expectedJobs} listed`
+    'every fixture lands in the same on-screen queue',
+    queued.length === expectedJobs,
+    `${queued.length}/${expectedJobs} listed`
   )
-
-  // No engine card is a step-2 thing, but the engine choice still has to be live
-  // when we get back there, so walk the wizard forward again.
-  await page.click('button[data-mcp-action="wizard-next"]')
-  await page.waitForFunction(() => document.querySelector('main')?.dataset.wizardStep === 'engine', null, {
-    timeout: 10_000,
-  })
 
   /* ------------------------------------------------------------- processing -- */
   await page.click('button[data-mcp-action="process-queue"]')
-  await page.waitForFunction(() => document.querySelector('main')?.dataset.wizardStep === 'run', null, {
-    timeout: 10_000,
-  })
-  record('starting the batch moves to the processing step', (await stepOf()) === 'run', await stepOf())
+  record(
+    'starting the batch leaves the studio and its queue where they are',
+    Boolean(await page.$('main[data-mcp-target="studio"]')) && (await jobRows()).length === expectedJobs,
+    `${(await jobRows()).length} row(s) still listed`
+  )
 
   await page.waitForSelector('[data-mcp-target="batch-progress"]', { timeout: 10_000 })
-  record('the processing step shows batch progress', true)
+  record('the batch progress card appears while the queue drains', true)
 
   const trail = []
   const poll = setInterval(async () => {
@@ -682,7 +672,7 @@ try {
 
     try {
       await auditPage.goto(`${BASE}/`, { waitUntil: 'domcontentloaded' })
-      await auditPage.waitForSelector('main[data-wizard-step]', { timeout: 20_000 })
+      await auditPage.waitForSelector('main[data-mcp-target="studio"]', { timeout: 20_000 })
 
       const audit = []
       for (const spec of [FIXTURES.mp3, FIXTURES.ogg, FIXTURES.m4a]) {
@@ -767,17 +757,17 @@ try {
     mimeType: 'audio/wav',
     buffer: wav,
   })
-  await page.waitForFunction(() => document.querySelector('main')?.dataset.wizardStep === 'engine', null, {
-    timeout: 10_000,
-  })
+  await page.waitForSelector('li[data-job-id]', { timeout: 10_000 })
   const paramModel = await page.$eval(
     '[data-mcp-target="model-selector"][data-model-id="rnnoise"]',
     (node) => node.dataset.selected
   )
+  // The URL choice has to reach the queued job too, not just the card.
+  const paramJobModel = await page.$eval('li[data-job-id]', (node) => node.dataset.jobModel)
   record(
     '?model= and ?debug= apply on boot',
-    diagnostics && paramModel === 'true',
-    JSON.stringify({ diagnostics, paramModel })
+    diagnostics && paramModel === 'true' && paramJobModel === 'rnnoise',
+    JSON.stringify({ diagnostics, paramModel, paramJobModel })
   )
 
   /* -------------------------------------------------- cross-origin isolation -- */

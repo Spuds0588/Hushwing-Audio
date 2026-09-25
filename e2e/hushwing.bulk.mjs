@@ -7,8 +7,8 @@
  *
  *   1. a single multi-file drop with `?autostart=true` queues and drains every file;
  *   2. concurrency never exceeds 1, and per-job progress never goes backwards;
- *   3. every job reaches 100% with a working download, and mixed media + one global
- *      output format degrades gracefully instead of failing;
+ *   3. every job reaches 100% with a working download, and a mixed batch gives each
+ *      result back in its own kind of container;
  *   4. OPFS hygiene: `uploads/` (the staging copies) is empty afterwards, while
  *      `outputs/` holds exactly one result per job — and both clean up on "clear";
  *   5. files dropped *while the queue is running* are not stranded;
@@ -239,19 +239,11 @@ try {
     })
   }
 
-  // The drop target only exists on step 1, so mid-run arrivals go through the
-  // wizard's "Add more files" — and landing back on the running batch is part of
-  // what is being checked here.
-  await page.click('button[data-mcp-action="wizard-back"]')
-  await page.waitForFunction(() => document.querySelector('main')?.dataset.wizardStep === 'add', null, {
-    timeout: 10_000,
-  })
+  // The studio is one page, so a mid-run arrival goes straight into the same drop
+  // target the batch started from: there is no navigation that could take the
+  // running queue off screen, and nothing to walk back to.
   await page.setInputFiles('input[data-mcp-action="upload"]', arrivals)
   await sleep(500)
-
-  const stepAfterArrival = await page.getAttribute('main', 'data-wizard-step')
-  await page.click('[data-mcp-target="wizard-step"][data-step="run"]')
-  await sleep(300)
 
   const afterArrival = await rows()
   record(
@@ -260,9 +252,10 @@ try {
     `${afterArrival.length} rows`
   )
   record(
-    'arrivals mid-run land back on the running batch, not on a step that cannot run them',
-    stepAfterArrival === 'run',
-    `step=${stepAfterArrival}`
+    'the drop target and the running queue stay on screen for the whole batch',
+    Boolean(await page.$('main[data-mcp-target="studio"]')) &&
+      Boolean(await page.$('input[data-mcp-action="upload"]')),
+    'studio + upload present mid-run'
   )
 
   const expected = drop.length + ARRIVALS

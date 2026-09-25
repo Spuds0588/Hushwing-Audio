@@ -20,8 +20,8 @@ backend, no quota and no telemetry.
 
 | Area | State |
 | --- | --- |
-| A three-step wizard — add files → pick an engine → watch the queue | ✅ |
-| Drag & drop with a review list, queue with per-job progress, stage labels, retry | ✅ |
+| One page — drop files, pick an engine, watch the queue, all on screen together | ✅ |
+| Drag & drop straight into the queue, with per-job progress, stage labels, retry | ✅ |
 | `webaudio` engine — 16 kHz high-pass → expander → soft-knee compressor → soft limiter | ✅ |
 | `rnnoise` engine — real RNNoise WebAssembly at its native 48 kHz | ✅ |
 | WAV · MP3 · M4A/AAC · FLAC · Ogg/Vorbis · Opus decoded natively — no ffmpeg needed | ✅ `mediabunny` |
@@ -62,15 +62,15 @@ in JavaScript and everything else goes through `mediabunny`, using the browser's
 | `bun run typecheck` | `tsc -b --noEmit`. Must be clean |
 | `bun run lint` | `oxlint` |
 | `bun run preview` | Serve the built `dist/` locally |
-| `bun run test:e2e` | The browser suite — the wizard, seven formats, byte-level result checks (below) |
+| `bun run test:e2e` | The browser suite — the studio, seven formats, byte-level result checks (below) |
 | `bun run test:bulk` | The bulk/queue suite — 20+ files in one drop, plus mid-run arrivals |
 
 ## Project layout
 
 ```
 index.html ─ coi-serviceworker → cross-origin isolation
-  └── src/App.tsx ──────── the studio shell: step routing, queue wiring, API install
-        ├── store/app.ts ......... zustand queue + wizard step — the single source of truth
+  └── src/App.tsx ──────── the studio shell: queue wiring, API install, footer
+        ├── store/app.ts ......... zustand queue — the single source of truth
         ├── lib/dsp.ts ........... `webaudio` kernels: high-pass, compressor, limiter, resample
         ├── lib/rnnoise.ts ....... RNNoise WebAssembly, rendered through an offline audio graph
         ├── lib/decode.ts ........ WAV parser + `mediabunny` reader (lazy), ffmpeg as fallback
@@ -80,9 +80,9 @@ index.html ─ coi-serviceworker → cross-origin isolation
         ├── lib/opfs.ts .......... streaming OPFS writer/reader
         ├── lib/pipeline.ts ...... stage → decode → enhance → stream → mux
         ├── lib/hushwing-api.ts .. window.HushwingAPI
-        ├── lib/{models,batch,logger}.ts
-        ├── components/ .......... Header, Stepper, AddStep, EngineStep, RunStep, JobQueue,
-        │                          DebugLog, ui primitives
+        ├── lib/{models,batch,logger,build}.ts
+        ├── components/ .......... Header, Dropzone, EnginePicker, JobQueue, DebugLog,
+        │                          ui primitives
         └── workers/enhance-worker.ts     the `webaudio` engine, off the main thread
 public/
   ├── coi-serviceworker.js           COOP/COEP injection for SharedArrayBuffer
@@ -106,8 +106,9 @@ HEADED=1 E2E_SCREENSHOT=/tmp/studio.png \
 
 `e2e/hushwing.e2e.mjs` drives real Chromium and asserts on the *delivered bytes*, not on the UI:
 
-1. proves step one is the only step on screen (no engine cards, queue or progress yet), then drops a
-   generated 16 kHz WAV and follows the wizard to the engine step;
+1. proves the studio is one page — drop target, engine cards, Process control and queue all present
+   at once, with no wizard tab and no separate "added files" list — then drops a generated 16 kHz
+   WAV and watches it land in that queue;
 2. asserts the removed preview UI and its worklet chunk stay gone;
 3. queues a real H.264/AAC MP4, an MP3, a FLAC, an Ogg/Vorbis file, an M4A/AAC file, an AVI and a
    VP8/Opus WebM recorded in-page, all through the `rnnoise` engine;
@@ -141,8 +142,8 @@ BULK_COUNT=50 BULK_VIDEO=0 PREVIEW_URL=https://<host> bun run test:bulk    # big
 
 1. one multi-file drop through `?autostart=true` queues and drains every file without a click;
 2. **concurrency never exceeds 1** and per-job progress never goes backwards;
-3. files added *while the batch is draining* (through the wizard's "Add more files") are picked up,
-   not stranded at `queued`, and land back on the running batch;
+3. files added *while the batch is draining* (into the same drop target, which never leaves the page)
+   are picked up rather than stranded at `queued`;
 4. OPFS hygiene: `uploads/` is empty afterwards (each staging copy is deleted in the job's
    `finally`) and `outputs/` holds exactly one result per job;
 5. every result follows its own source — in a mixed batch the audio files come back as WAV and the
@@ -206,6 +207,12 @@ depends on it being there.
 - **`?debug=true`** opens the on-screen diagnostics panel: a bounded 250-entry rolling log, the
   capability badges (OPFS, AudioWorklet, SharedArrayBuffer, cross-origin isolation, Web Workers)
   and a log download. It has a stable hook: `[data-mcp-target="diagnostics"]`.
+- **The footer names the build.** `vite.config.ts` injects the short commit and build time as
+  `<meta name="hushwing-build-*">` (`src/lib/build.ts` → `[data-mcp-target="build-marker"]`), and the
+  first log line prints the same marker. Compare a page's footer against `git rev-parse --short HEAD`
+  before believing a stale tab is a deploy problem; with no git and no CI variable it honestly
+  reports `dev`. (It reads meta tags rather than using `define` because Vite does not substitute
+  `define` identifiers in client modules under `vite dev`, which is where the footer gets looked at.)
 - **`window.HushwingAPI.downloadDebugLog()`** exports the same log as a `.txt`.
 - From the console the queue is fully drivable: `HushwingAPI.getJobs()`, `queueMedia()`,
   `processMedia()`.
@@ -225,9 +232,9 @@ depends on it being there.
   pending worker calls on dispose.
 - **The worker reports failures as plain strings**, not `Error`s. `describeError()` in
   `lib/ffmpeg.ts` exists because a naive `instanceof Error` check threw away the only useful detail.
-- **The wizard step is derived from the queue, not from clicks alone.** `enqueue()` moves you to the
-  engine step, `runQueue()` moves you to the queue, and adding a file while a batch runs keeps you on
-  the queue. A step that cannot act on the current state renders disabled instead of vanishing.
+- **The studio is one page, and the queue is the only state that moves.** There is no step to keep
+  in sync: a drop appends to the queue that is already on screen, and the engine control applies to
+  everything still waiting. A feature that needs a screen of its own needs a different product.
 
 ## Headless / agent surface
 
@@ -242,13 +249,15 @@ window.HushwingAPI.downloadDebugLog()
 
 | Selector | Purpose |
 | --- | --- |
-| `main[data-wizard-step="add|engine|run"]` | Which step is on screen |
-| `[data-mcp-target="wizard-step"][data-step="<id>"]` | Step tab (`data-state`: current/done/later) |
-| `input[data-mcp-action="upload"]` | Hidden file input, step 1 — agents set `.files` and dispatch `change` |
-| `[data-mcp-target="model-selector"][data-model-id="webaudio|rnnoise"]` | Engine card, step 2 |
+| `main[data-mcp-target="studio"]` | The page — present as soon as the app renders |
+| `input[data-mcp-action="upload"]` | Hidden file input — agents set `.files` and dispatch `change` |
+| `[data-mcp-target="model-selector"][data-model-id="webaudio|rnnoise"]` | Engine card (`data-selected="true"` marks the choice) |
 | `button[data-mcp-action="process-queue"]` | Process every queued job |
+| `button[data-mcp-action="start-over"]` | Purge the queue and its OPFS results |
+| `[data-mcp-target="batch-progress"]` | Batch progress (only while the queue is non-empty) |
 | `a[data-mcp-action="download-result"][data-job-id="<uuid>"]` | Result download link |
 | `button[data-mcp-action="export-zip"]` | Download every finished result as a zip |
+| `[data-mcp-target="build-marker"]` | The commit and build time this page is running |
 | `[data-mcp-target="diagnostics"]` | Diagnostics panel (present only while the log is open) |
 
 Job rows poll cleanly: `<li data-job-id="<uuid>" data-status="queued|preparing|processing|completed|error"

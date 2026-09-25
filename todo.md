@@ -1,10 +1,11 @@
 # Hushwing — TODO / Work Log
 
-Last updated: 2026-09-19 (session 6)
+Last updated: 2026-09-25 (session 7)
 Status: **v1 is complete, live, and studio-only.** The product is **Hushwing** (the repository is
-still `Hushwing-Audio`). The studio is a three-step wizard (add files → pick an engine → watch the
-queue), RNNoise is real WebAssembly, every common audio container is decoded natively, video keeps
-its video, and the static build is deployed to GitHub Pages.
+still `Hushwing-Audio`). The studio is a **single page** — drop target, engine choice, Process
+control and job queue all on screen at once. RNNoise is real WebAssembly, every common audio
+container is decoded natively, video keeps its video, the footer names the exact build, and the
+static build is deployed to GitHub Pages.
 
 ---
 
@@ -16,12 +17,14 @@ its video, and the static build is deployed to GitHub Pages.
   `mcp.json`, `worklets/`, `coi-serviceworker.js`) with relative paths.
 - Preview commands saved: install `bun install`, dev `bun run dev` (5173), build `bunx vite build`.
 - Freebuff preview reaches ready; every module in the graph transforms without error.
-- **Verified end to end in a real browser (session 6):** `bun run test:e2e` walks the wizard in
-  Chromium and passes 30/30 — WAV, MP3, FLAC, Ogg/Vorbis, M4A/AAC, AVI, MP4 and WebM jobs all
-  complete through the RNNoise engine, every delivered result's bytes are inspected, each job reports
-  which reader produced its PCM, an audio-only queue is audited in a fresh context for fetching the
-  ffmpeg core (zero requests), the `.zip` export works, and the URL params / `window.HushwingAPI`
-  behave. Run headed (`HEADED=1` under `xvfb-run`) it also produces a screenshot.
+- **Verified end to end in a real browser (session 7):** `bun run test:e2e` drives the single-page
+  studio in Chromium and passes 31/31 — WAV, MP3, FLAC, Ogg/Vorbis, M4A/AAC, AVI, MP4 and WebM jobs
+  all complete through the RNNoise engine, every delivered result's bytes are inspected, each job
+  reports which reader produced its PCM, an audio-only queue is audited in a fresh context for
+  fetching the ffmpeg core (zero requests), the `.zip` export works, the footer build marker is
+  checked, and the URL params / `window.HushwingAPI` behave. The bulk suite passes 17/17 (24/24 jobs,
+  peak concurrency 1, heap +0.8 MB). Run headed (`HEADED=1` under `xvfb-run`) it also produces a
+  screenshot.
 - **Live in production:** <https://spuds0588.github.io/Hushwing-Audio/> serves the built bundle and
   passes the same suite 21/21, with `crossOriginIsolated === true`, the ffmpeg core loaded from its
   own origin and no third-party requests.
@@ -95,6 +98,31 @@ its video, and the static build is deployed to GitHub Pages.
 - [x] Verified: main suite **33/33** and bulk **17/17** on the production build, plus a bulk run with
       `BULK_MODEL=rnnoise` (24/24 jobs, heap +0.4 MB) to prove the per-job worklet
       node + `OfflineAudioContext` do not leak.
+
+## 1a-4. Back to one page, and a build that names itself (session 7)
+
+- [x] **The wizard is gone again.** A wall of steps around a queue that already shows everything was
+      friction: the drop target now sits above the engine cards, the Process control and the job
+      queue, all on one page (`main[data-mcp-target="studio"]`). `Stepper.tsx`, `AddStep.tsx`,
+      `EngineStep.tsx`, `RunStep.tsx`, `store.step` / `setStep` / `WIZARD_STEPS`, the
+      `data-wizard-step` / `wizard-step` / `wizard-next` / `wizard-back` / `added-files` hooks and
+      the separate "Ready to process" list were all deleted; `Dropzone.tsx` and `EnginePicker.tsx`
+      replace them, and `BatchProgress` moved next to the queue it describes.
+- [x] **Mid-run arrivals got simpler.** With no step to walk back to, a file dropped while a batch
+      drains goes into the same input the batch started from; the drop target no longer disables
+      itself while processing, it just says what will happen.
+- [x] **The build marker.** `vite.config.ts` injects the short commit (`GITHUB_SHA`, else
+      `git rev-parse --short HEAD`, else `dev`) and the build timestamp as
+      `<meta name="hushwing-build-*">`; `src/lib/build.ts` reads them into `BUILD_MARKER`, which the
+      boot log prints and the footer renders at `[data-mcp-target="build-marker"]`. That is what
+      settles "stale tab or stale deploy?" — the question that cost a session of production
+      archaeology. Meta tags, not `define`, because Vite leaves `define` identifiers alone in client
+      modules under `vite dev` — the mode the preview runs.
+- [x] Docs and both suites updated for the single page; `public/mcp.json` bumped to 1.4.0 with the
+      new hook list.
+- [x] Verified: `bun tsc -b --noEmit` clean, `bun run lint` 0 errors (8 pre-existing warnings),
+      `bunx vite build` emits `dist/` with the marker baked in, main suite **31/31** and bulk
+      **17/17** against the dev preview with zero console errors.
 
 ## 1a-3. Honest preview, native formats, product rename (session 6)
 
@@ -215,8 +243,10 @@ its video, and the static build is deployed to GitHub Pages.
    top-level-only avoids reload loops in sandboxed previews.
 4. **Honest model naming.** The engine called `rnnoise` is RNNoise, and when it was not, the UI said
    so. Promising a neural model we do not ship would be worse than a slower roadmap.
-5. **One step at a time.** The wizard exists because a wall of controls is not a flow. If a new
-   feature needs a decision, it needs a place in a step — not another panel on the same screen.
+5. **One page, one decision.** The studio fits on a single screen on purpose: drop target, engine
+   choice, Process control, queue. The wizard was tried (session 5) and removed again (session 7) —
+   it hid the queue behind two clicks without removing anything the user had to decide. A new
+   feature earns its place on this page or it does not ship.
 6. **Engine contract returns samples, not blobs.** Blob creation moved into the pipeline so
    results can stream to OPFS instead of being assembled in memory.
 7. **Native decode before ffmpeg.** The 32 MB core is a tool, not a requirement — WAV is parsed in

@@ -29,6 +29,53 @@ export function isActiveJob(job: Job): boolean {
   return job.status === 'queued' || job.status === 'preparing' || job.status === 'processing'
 }
 
+/**
+ * The one piece of chrome a long batch needs: how far the whole queue has got.
+ * It is rendered above the job list only once there is something to report.
+ */
+export function BatchProgress({ jobs, processing }: { jobs: Job[]; processing: boolean }) {
+  const active = jobs.find((job) => job.status === 'preparing' || job.status === 'processing')
+  const finished = jobs.filter((job) => job.status === 'completed' || job.status === 'error').length
+  const failed = jobs.filter((job) => job.status === 'error').length
+  const rendered = jobs.reduce((total, job) => total + (job.outputSize ?? 0), 0)
+
+  const overall = jobs.length
+    ? Math.round(
+        jobs.reduce(
+          (sum, job) => sum + (job.status === 'completed' ? 100 : Math.min(job.progress, 99)),
+          0
+        ) / jobs.length
+      )
+    : 0
+
+  return (
+    <section
+      data-mcp-target="batch-progress"
+      className="rounded-2xl border border-border bg-[var(--color-surface-1)] p-5"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant={processing ? 'info' : failed > 0 ? 'error' : 'success'}>
+          {processing ? 'processing' : failed > 0 ? 'finished with errors' : 'done'}
+        </Badge>
+        <span className="text-sm text-[var(--color-ink-1)]">
+          {finished} of {jobs.length} file{jobs.length === 1 ? '' : 's'}
+          {rendered > 0 ? ` · ${formatBytes(rendered)} ready` : ''}
+          {failed > 0 ? ` · ${failed} failed` : ''}
+        </span>
+      </div>
+
+      <div className="mt-4">
+        <Progress value={overall} />
+        <p className="mt-1.5 text-[11px] text-[var(--color-ink-muted)]">
+          {active
+            ? `${active.sourceName} · ${active.stage ?? 'working'} · ${Math.round(active.progress)}%`
+            : `${overall}% of the batch`}
+        </p>
+      </div>
+    </section>
+  )
+}
+
 interface JobQueueProps {
   jobs: Job[]
   onRun: (jobId: string) => void
@@ -131,7 +178,7 @@ export function JobQueue({ jobs, onRun, onRemove, onClearFinished }: JobQueuePro
       {visible.length === 0 ? (
         <p className="rounded-xl border border-dashed border-border py-12 text-center text-sm text-[var(--color-ink-muted)]">
           {jobs.length === 0
-            ? 'The queue is empty. Go back a step and add some files.'
+            ? 'The queue is empty. Drop a file above and it shows up here.'
             : 'No jobs match this filter.'}
         </p>
       ) : (

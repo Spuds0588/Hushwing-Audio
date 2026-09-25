@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -6,6 +7,64 @@ import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 
 const root = dirname(fileURLToPath(import.meta.url))
+
+/**
+ * The build marker: the commit this bundle came from and when it was built.
+ *
+ * Best-effort on purpose — a build without git (or without a CI variable) still
+ * succeeds and simply reports `dev`, which is more useful than failing the build
+ * over a footer string.
+ */
+function buildMarker(): { sha: string; time: string } {
+  let sha = (process.env.GITHUB_SHA || process.env.VERCEL_GIT_COMMIT_SHA || '').slice(0, 7)
+
+  if (!sha) {
+    try {
+      sha = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+        cwd: root,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+        .toString()
+        .trim()
+    } catch {
+      sha = ''
+    }
+  }
+
+  return { sha: sha || 'dev', time: new Date().toISOString() }
+}
+
+/**
+ * Publish the marker as `<meta name="hushwing-build-*">` in the page head, which
+ * `src/lib/build.ts` reads at runtime.
+ *
+ * Deliberately not `define`: Vite does not substitute `define` identifiers in
+ * client modules under `vite dev` (only in a build), so a `define`-based marker
+ * reads as undefined in the preview — the one place the footer is actually
+ * looked at while developing. A meta tag works in both modes, and a page that
+ * somehow misses it degrades to `dev` instead of failing to boot.
+ */
+function buildMarkerTags(): Plugin {
+  const marker = buildMarker()
+
+  return {
+    name: 'hushwing:build-marker',
+    transformIndexHtml() {
+      return [
+        {
+          tag: 'meta',
+          attrs: { name: 'hushwing-build-sha', content: marker.sha },
+          injectTo: 'head' as const,
+        },
+        {
+          tag: 'meta',
+          attrs: { name: 'hushwing-build-time', content: marker.time },
+          injectTo: 'head' as const,
+        },
+      ]
+    },
+  }
+}
 
 /**
  * Copy the ffmpeg.wasm core out of `node_modules` into the built site.
@@ -37,7 +96,7 @@ function emitFFmpegCore(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), emitFFmpegCore()],
+  plugins: [react(), tailwindcss(), buildMarkerTags(), emitFFmpegCore()],
   // Relative assets: one build works at the preview root and at
   // https://<user>.github.io/<repo>/ without a rebuild.
   base: './',

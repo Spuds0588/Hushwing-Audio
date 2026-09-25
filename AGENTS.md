@@ -35,12 +35,12 @@ for both the Freebuff hosting panel and GitHub Pages.
 │   ├── mcp.json                 WebMCP discovery document (served at /mcp.json)
 │   └── .nojekyll
 └── src/
-    ├── App.tsx             the studio shell: step routing, queue wiring, API install
-    ├── components/         Header, Stepper, AddStep, EngineStep, RunStep, JobQueue,
-    │                       DebugLog, ui primitives
+    ├── App.tsx             the studio shell: queue wiring, API install, footer
+    ├── components/         Header, Dropzone, EnginePicker, JobQueue, DebugLog,
+    │                       ui primitives
     ├── lib/                dsp, engine, rnnoise, decode, ffmpeg, filekit, opfs, logger,
-    │                       models, pipeline, batch, hushwing-api
-    ├── store/app.ts        zustand queue, wizard step + URL params
+    │                       models, pipeline, batch, build, hushwing-api
+    ├── store/app.ts        zustand queue + URL params
     ├── types/hushwing.ts   domain types
     └── workers/            enhance-worker.ts (Pipeline A)
 ```
@@ -58,10 +58,18 @@ for both the Freebuff hosting panel and GitHub Pages.
 - **All processing is client-side.** There is no backend, no upload and no telemetry. If a
   change would send user media anywhere, it is wrong.
 - Server state does not exist, so do not add a data-fetching layer.
-- **The studio is a three-step wizard** (`add` → `engine` → `run`), and only the current step is on
-  screen. The step lives in the store so the queue can move it: queueing a file ends step one,
-  starting the batch jumps to step three, and a file added while a batch is running lands back on
-  the running batch rather than on a step that cannot act on it.
+- **The studio is one page.** `main[data-mcp-target="studio"]` holds the drop target, the engine
+  choice, the Process control and the job queue at the same time, so nothing a drop does can hide it
+  from the user. A file added while a batch is draining joins the queue in place; there is no step
+  to walk back to and no second list to keep in sync with the first. Do not reintroduce a wizard, a
+  stepper or an "added files" list.
+- **The build names itself.** `vite.config.ts` computes the short commit (`GITHUB_SHA`, else
+  `git rev-parse --short HEAD`, else `dev`) plus a build timestamp and injects them as
+  `<meta name="hushwing-build-sha|time">`; `src/lib/build.ts` reads them into `BUILD_MARKER`, which
+  the footer renders and the boot log prints. Keep it — it is how a cached tab is told from a fresh
+  deploy without guessing. Two rules: it must never be able to fail a build, and it must not use
+  `define` (Vite does not substitute `define` identifiers in client modules under `vite dev`, so a
+  `define`-based marker reads as undefined in the preview).
 - **The product has exactly one decision in it: which engine.** Files are dropped in, the output
   follows the source (video → video with the enhanced track muxed back, audio → 48 kHz WAV), and the
   queue reports progress. Do not add output-format pickers, import-from-URL fields, cloud pickers,
@@ -144,16 +152,13 @@ These exact selectors exist on the live page:
 
 | Selector | Purpose |
 | --- | --- |
-| `main[data-wizard-step="add\|engine\|run"]` | Which step is on screen. Only that step is rendered |
-| `[data-mcp-target="wizard-step"][data-step="<id>"]` | Step tab. `data-state` is `current`, `done` or `later`; disabled when unreachable |
-| `input[data-mcp-action="upload"]` | Hidden file input, step 1. Agents set `.files` / dispatch `change` |
-| `[data-mcp-target="added-files"] li[data-job-id]` | The queued-file list on step 1 |
-| `button[data-mcp-action="wizard-next"]` | Step 1 → 2 |
-| `[data-mcp-target="model-selector"][data-model-id="webaudio\|rnnoise\|deepfilternet"]` | Engine card, step 2. A `<button role="radio">`; `data-selected="true"` marks the choice. Disabled when the engine is not implemented |
-| `button[data-mcp-action="process-queue"]` | Starts processing every queued job (step 2) |
-| `button[data-mcp-action="wizard-back"]` | Step 3 → 1 ("Add more files"), or step 2 → 1 |
-| `button[data-mcp-action="start-over"]` | Purges the queue and its OPFS results, back to step 1 |
-| `[data-mcp-target="batch-progress"]` | Batch progress card, step 3 |
+| `main[data-mcp-target="studio"]` | The page itself. Present as soon as the app renders — the readiness check |
+| `input[data-mcp-action="upload"]` | Hidden file input. Agents set `.files` / dispatch `change` |
+| `[data-mcp-target="model-selector"][data-model-id="webaudio\|rnnoise\|deepfilternet"]` | Engine card. A `<button role="radio">`; `data-selected="true"` marks the choice. Disabled when the engine is not implemented |
+| `button[data-mcp-action="process-queue"]` | Starts processing every queued job. Disabled while nothing is queued or a batch is running |
+| `button[data-mcp-action="start-over"]` | Purges the queue and its OPFS results |
+| `[data-mcp-target="batch-progress"]` | Batch progress card. Rendered only while the queue is non-empty |
+| `[data-mcp-target="build-marker"]` | The commit and build time this page is running |
 | `a[data-mcp-action="download-result"][data-job-id="<uuid>"]` | Result download link |
 | `button[data-mcp-action="export-zip"]` | Downloads every finished result as a zip |
 | `[data-mcp-target="diagnostics"]` | Diagnostics panel wrapper. Present only while the log is open |
@@ -194,9 +199,9 @@ bunx vite build          # must emit dist/ and exit
 ```
 
 Then confirm the preview reaches ready and that the studio renders. A change that compiles but
-produces a blank page is not done. If you touched the wizard, both suites navigate it by step; if you
-touched `src/lib/dsp.ts` or `src/lib/rnnoise.ts`, the worker and the offline audio graph are both
-frozen by the suites.
+produces a blank page is not done. If you touched the studio's layout or its hooks, both suites read
+it from the live page and will catch a missing selector; if you touched `src/lib/dsp.ts` or
+`src/lib/rnnoise.ts`, the worker and the offline audio graph are both frozen by the suites.
 
 For anything touching the pipeline, an engine or the format handling, run the browser suite as well:
 
@@ -206,9 +211,10 @@ PREVIEW_URL=https://<preview-host> bun run test:e2e
 ```
 
 `e2e/hushwing.e2e.mjs` drives real Chromium against the live preview down the real flow: it checks
-that step one is the *only* step on screen, drops a generated WAV and follows the wizard to the
-engine step, then queues a downloaded MP4, an MP3, a FLAC, an Ogg/Vorbis file, an M4A/AAC file, an
-AVI and a WebM recorded in-page. It asserts, per job, which decoder ran and what container, rate and
+that the drop target, the engine cards, the Process control and the queue are all on screen on one
+page (and that no wizard tab or "added files" list has come back), drops a generated WAV, then
+queues a downloaded MP4, an MP3, a FLAC, an Ogg/Vorbis file, an M4A/AAC file, an AVI and a WebM
+recorded in-page. It asserts, per job, which decoder ran and what container, rate and
 channel count came back, audits in a fresh context that an audio-only queue fetches the ffmpeg core
 **zero** times, checks a silent video fails with a sentence, and exercises the zip export, the URL
 parameters, `window.HushwingAPI` and cross-origin isolation. It also fails if the removed preview UI
@@ -224,8 +230,8 @@ PREVIEW_URL=https://<preview-host> bun run test:bulk
 PREVIEW_URL=https://<preview-host> BULK_MODEL=rnnoise bun run test:bulk   # WebAssembly engine
 ```
 
-`e2e/hushwing.bulk.mjs` drops 20+ files in one go (plus a few more mid-run, through the wizard's
-"Add more files") and checks the invariants above: concurrency stays at 1, progress never regresses,
+`e2e/hushwing.bulk.mjs` drops 20+ files in one go (plus a few more mid-run, into the same drop
+target the batch started from) and checks the invariants above: concurrency stays at 1, progress never regresses,
 `uploads/` ends up empty while `outputs/` holds one result per job, mid-run arrivals are not
 stranded, the zip matches the results, and heap growth stays bounded. It also proves a mixed batch
 keeps every result in its own kind of container. `BULK_MODEL=rnnoise` is the run that matters after

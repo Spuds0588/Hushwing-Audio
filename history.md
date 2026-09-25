@@ -569,3 +569,96 @@ file locally and hands the studio a queued job, plus `file_handlers`/`launchQueu
 Chrome on Android is the only browser that delivers files to a share target, it requires an
 installed PWA, and iOS has no share target at all — so the plan says that instead of promising it
 everywhere.
+
+---
+
+## Session 7 — 2026-09-25 — back to one page, and a build that names itself
+
+### Goal
+
+Two asks: restore the compact single-page studio (drop zone, engine selector, Process button and the
+queue visible at once) and add a build marker that is both logged and shown in the footer.
+
+### The wizard went back out
+
+Session 5 turned the studio into `add` → `engine` → `run`, with only one step on screen. In practice
+that hid the queue behind two clicks and asked for a click to move between controls that all fit on
+one screen — and the drop target disappeared exactly when a long batch made "add three more of these"
+the most likely next action. So the steps came out:
+
+| Deleted | Replaced by |
+| --- | --- |
+| `components/Stepper.tsx` | — (nothing to navigate) |
+| `components/AddStep.tsx` | `components/Dropzone.tsx` (drop target only; no second file list) |
+| `components/EngineStep.tsx` | `components/EnginePicker.tsx` (cards, always visible) |
+| `components/RunStep.tsx` | `BatchProgress` exported from `components/JobQueue.tsx` |
+| `store.step`, `setStep`, `WIZARD_STEPS` | — (the queue is the only state that moves) |
+
+The page is now `main[data-mcp-target="studio"]`: heading → drop target → engine cards → a Process
+bar (queued count, Start over, Process) → batch progress (only while the queue is non-empty) → the
+job queue, which is always rendered so its empty state says where results will appear.
+
+The agent contract moved with it. Gone: `main[data-wizard-step]`,
+`[data-mcp-target="wizard-step"]`, `button[data-mcp-action="wizard-next"]`,
+`button[data-mcp-action="wizard-back"]` and the `[data-mcp-target="added-files"]` list. Kept and now
+always reachable in one place: `input[data-mcp-action="upload"]`,
+`[data-mcp-target="model-selector"][data-model-id]`, `button[data-mcp-action="process-queue"]`,
+`button[data-mcp-action="start-over"]`, `[data-mcp-target="batch-progress"]`, the download links, the
+zip export, `[data-mcp-target="diagnostics"]` and the job rows. `public/mcp.json` is 1.4.0.
+
+Mid-run arrivals got *simpler* rather than merely preserved: the drop target no longer disables
+itself while a batch drains (it just says the file will join the queue behind it), so the bulk
+suite's "add three files mid-run" step is now a plain `setInputFiles` with nothing to navigate.
+
+### The build marker
+
+`vite.config.ts` computes a marker once per server/build — `GITHUB_SHA` (or
+`VERCEL_GIT_COMMIT_SHA`), else `git rev-parse --short HEAD`, else `dev`, plus
+`new Date().toISOString()` — and injects it as `<meta name="hushwing-build-sha|time">` in the page
+head. `src/lib/build.ts` reads those tags into `BUILD_MARKER`, which does two jobs:
+
+- the boot log's first line becomes `Hushwing booted · build 99f724f · 2026-09-25 00:36`;
+- the footer renders it at `[data-mcp-target="build-marker"]`.
+
+Every step is best-effort by design: no git and no CI variable means `dev`, never a failed build.
+This is the feature the previous session needed — a screenshot of the old UI took an afternoon of
+production archaeology (stale client vs. stale deploy) to explain, and the footer now answers it in
+one glance.
+
+**Two dead ends on the way there**, both worth remembering:
+
+1. `define` (`__BUILD_SHA__`) looked like the obvious tool and works in a build — the substitution
+   is a literal in `dist/assets/index-*.js`. But a fresh `vite dev` server leaves source modules
+   untouched: Vite 8's `vite:define` transform returns early for the dev *client* environment, so
+   the identifier stayed undefined and the footer read `dev`. Verified by transforming
+   `/src/lib/build.ts` through an in-process dev server (`createServer({ middlewareMode: true })`),
+   not by guessing at a running one.
+2. A virtual module (`virtual:hushwing-build`) fixes that neatly and resolves the same in both
+   modes — but it is a config change, and the preview process was running the config it started
+   with. The app imports the virtual id, so the stale server could not resolve it and the preview
+   would have gone blank until a restart that this sandbox has no tool for. That is exactly the kind
+   of change that must not be able to break the page it is decorating, so it was swapped for the
+   meta-tag read: no import to resolve, and a page that somehow misses the tags says `dev` instead
+   of failing to boot.
+
+### Verification
+
+- `bun tsc -b --noEmit` clean; `bun run lint` 0 errors (the same 8 pre-existing warnings);
+  `bunx vite build` emits `dist/` (index 495 kB, src 329 kB, css 27 kB) with
+  `<meta name="hushwing-build-sha" content="99f724f">` and its timestamp in `dist/index.html`.
+- main suite **31/31** against the dev preview, zero console errors — the extra check is the new
+  footer marker. Its first assertions now pin the single page: 3 engine cards, an upload input, a
+  Process button and the queue all present on load, **0** wizard tabs, no `ab-preview`, no rows.
+  Everything downstream still holds: 8 jobs through RNNoise with the same decoder labels
+  (`wav reader`, `mediabunny` ×6, `ffmpeg` ×1), WAV 384 044 B at 48 kHz mono, MP4 → MP4, WebM → WebM,
+  AVI → AVI, zip 36.5 MB, and the fresh-context audit at 0 core requests.
+- bulk suite **17/17** (24/24 jobs, peak concurrency 1, 0 progress regressions, `uploads/` empty,
+  `outputs/` 24/24, "23 wav + 1 video·audio", zip 24 entries, heap +0.8 MB).
+- Also fixed while in there: the RNNoise card's description still claimed "the same binary driving
+  the live A/B preview", which session 6 had removed. The card now describes the offline graph that
+  actually runs.
+
+### Still open
+
+Nothing about the pipeline changed, so the old caveats stand: no physical Android/iOS pass, no >1 GB
+file run, and the PWA/share-target work is still backlog (`todo.md` §3).

@@ -1,30 +1,30 @@
 import { useCallback, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { Header } from './components/Header'
-import { Stepper } from './components/Stepper'
-import { AddStep } from './components/AddStep'
-import { EngineStep } from './components/EngineStep'
-import { RunStep } from './components/RunStep'
+import { Dropzone } from './components/Dropzone'
+import { EnginePicker } from './components/EnginePicker'
+import { BatchProgress, JobQueue } from './components/JobQueue'
 import { DebugLog } from './components/DebugLog'
-import { applyUrlParams, parseUrlParams, useAppStore, type WizardStep } from './store/app'
+import { Button } from './components/ui'
+import { applyUrlParams, parseUrlParams, useAppStore } from './store/app'
 import { purgeJobFiles, runJob, runQueue } from './lib/pipeline'
 import { installHushwingAPI } from './lib/hushwing-api'
 import { availableModelIds } from './lib/models'
 import { mayNeedFfmpeg } from './lib/decode'
 import { preloadFFmpeg } from './lib/ffmpeg'
-import { revokeMediaUrl } from './lib/filekit'
+import { fileSizeOf, formatBytes, revokeMediaUrl } from './lib/filekit'
 import { logger } from './lib/logger'
 import { opfsSupported } from './lib/opfs'
+import { BUILD_MARKER } from './lib/build'
 
 /**
- * Hushwing is one page and one flow: add files, pick an engine, watch the
- * queue. Each of those is a step, and only the current step is on screen — the
- * step the user is on is the only thing the app asks them to think about.
+ * Hushwing is one page: drop a file, pick an engine, watch the queue. Everything
+ * needed at any moment is on screen at once, so there is no step to navigate and
+ * nothing a drop can hide from the user.
  */
 export default function App() {
   const jobs = useAppStore((state) => state.jobs)
-  const step = useAppStore((state) => state.step)
-  const setStep = useAppStore((state) => state.setStep)
+  const processing = useAppStore((state) => state.processing)
   const showDebug = useAppStore((state) => state.showDebug)
   const setShowDebug = useAppStore((state) => state.setShowDebug)
 
@@ -34,7 +34,7 @@ export default function App() {
     applyUrlParams(params)
     installHushwingAPI()
 
-    logger.info('Hushwing booted')
+    logger.info(`Hushwing booted · build ${BUILD_MARKER}`)
     logger.info(
       `engine: ${availableModelIds().join(', ')} · OPFS ${opfsSupported() ? 'yes' : 'no'} · crossOriginIsolated ${
         window.crossOriginIsolated === true ? 'yes' : 'no'
@@ -53,17 +53,12 @@ export default function App() {
   }, [needsFFmpeg])
 
   const handleProcessQueue = useCallback(() => {
-    setStep('run')
     void runQueue()
-  }, [setStep])
+  }, [])
 
-  const handleRunJob = useCallback(
-    (jobId: string) => {
-      setStep('run')
-      void runJob(jobId).catch(() => undefined)
-    },
-    [setStep]
-  )
+  const handleRunJob = useCallback((jobId: string) => {
+    void runJob(jobId).catch(() => undefined)
+  }, [])
 
   const handleRemoveJob = useCallback((jobId: string) => {
     const job = useAppStore.getState().jobs.find((candidate) => candidate.id === jobId)
@@ -96,13 +91,10 @@ export default function App() {
     useAppStore.getState().resetQueue()
   }, [])
 
-  const canReach = useCallback(
-    (target: WizardStep) => {
-      if (target === 'add') return true
-      if (target === 'engine') return jobs.length > 0
-      return jobs.some((job) => job.status !== 'queued')
-    },
-    [jobs]
+  const pending = jobs.filter((job) => job.status === 'queued')
+  const pendingSize = pending.reduce(
+    (sum, job) => sum + (job.original ? fileSizeOf(job.original) : 0),
+    0
   )
 
   return (
@@ -110,55 +102,80 @@ export default function App() {
       <Header onToggleLog={() => setShowDebug(!showDebug)} />
 
       <main
-        data-wizard-step={step}
+        data-mcp-target="studio"
         className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-8 sm:px-6 sm:py-10"
       >
-        <div className="flex flex-col gap-2">
-          <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
-            Clean up any recording
-            <span className="block text-[var(--color-ink-muted)]">
-              without uploading a single byte
-            </span>
-          </h1>
+        <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
+          Clean up any recording
+          <span className="block text-[var(--color-ink-muted)]">
+            without uploading a single byte
+          </span>
+        </h1>
+
+        <Dropzone onAutostart={handleProcessQueue} />
+
+        <EnginePicker />
+
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-[var(--color-surface-1)]/60 p-4">
+          <p className="text-xs text-[var(--color-ink-muted)]">
+            {pending.length > 0
+              ? `${pending.length} file${pending.length === 1 ? '' : 's'} queued${pendingSize > 0 ? ` · ${formatBytes(pendingSize)}` : ''} · one runs at a time`
+              : 'Nothing is waiting. Add a file and press Process.'}
+          </p>
+
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              onClick={handleStartOver}
+              data-mcp-action="start-over"
+              disabled={jobs.length === 0}
+            >
+              Start over
+            </Button>
+            <Button
+              data-mcp-action="process-queue"
+              onClick={handleProcessQueue}
+              disabled={processing || pending.length === 0}
+            >
+              {processing
+                ? 'Processing…'
+                : pending.length > 0
+                  ? `Process ${pending.length} file${pending.length === 1 ? '' : 's'}`
+                  : 'Process'}
+            </Button>
+          </div>
         </div>
 
-        <Stepper step={step} canReach={canReach} onSelect={setStep} />
-
-        <motion.section
-          key={step}
+        <motion.div
+          key={jobs.length > 0 ? 'active' : 'empty'}
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.18 }}
+          className="flex flex-col gap-4"
         >
-          {step === 'add' && (
-            <AddStep
-              onContinue={() => setStep('engine')}
-              onRemove={handleRemoveJob}
-              onAutostart={handleProcessQueue}
-            />
-          )}
+          {jobs.length > 0 && <BatchProgress jobs={jobs} processing={processing} />}
 
-          {step === 'engine' && (
-            <EngineStep onProcess={handleProcessQueue} onBack={() => setStep('add')} />
-          )}
-
-          {step === 'run' && (
-            <RunStep
-              onRun={handleRunJob}
-              onRemove={handleRemoveJob}
-              onClearFinished={handleClearFinished}
-              onAddMore={() => setStep('add')}
-              onStartOver={handleStartOver}
-            />
-          )}
-        </motion.section>
+          <JobQueue
+            jobs={jobs}
+            onRun={handleRunJob}
+            onRemove={handleRemoveJob}
+            onClearFinished={handleClearFinished}
+          />
+        </motion.div>
 
         <DebugLog open={showDebug} />
       </main>
 
       <footer className="border-t border-border">
-        <div className="mx-auto flex max-w-3xl flex-col gap-2 px-4 py-8 text-xs text-[var(--color-ink-muted)] sm:flex-row sm:items-center sm:justify-between sm:px-6">
-          <p>Hushwing — client-side voice isolation. Licensed under the terms in LICENSE.</p>
+        <div className="mx-auto flex max-w-3xl flex-col gap-2 px-4 py-8 text-xs text-[var(--color-ink-muted)] sm:px-6">
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+            <p>Hushwing — client-side voice isolation. Licensed under the terms in LICENSE.</p>
+            {/* Which revision is actually on screen: the fastest way to tell a
+                cached tab from a fresh deploy. */}
+            <p data-mcp-target="build-marker" title={BUILD_MARKER}>
+              build <code className="text-[var(--color-ink-1)]">{BUILD_MARKER}</code>
+            </p>
+          </div>
           <p>
             Capabilities for agents: <code>window.HushwingAPI</code> · <code>/mcp.json</code> ·{' '}
             <code>?debug=true</code>

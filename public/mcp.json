@@ -1,13 +1,13 @@
 {
   "name": "hushwing-audio",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "title": "Hushwing",
   "description": "Private, client-side voice isolation for audio and video. Enhances media locally with WebAssembly and Web Audio; nothing is uploaded.",
   "transport": "browser",
   "entry": "./index.html",
   "privacy": "No network calls are made with your media. Processing happens in the page.",
   "output": "The output follows the source: a video comes back as a video with the enhanced track muxed back in, audio as a 48 kHz mono WAV. There is no format option.",
-  "flow": "A three-step wizard. Step 1 adds files (main[data-wizard-step=\"add\"]), step 2 picks an engine (\"engine\"), step 3 runs the queue (\"run\"). Only the current step is rendered, and queueing a file advances the wizard for you. There is no in-app preview: judge a result by running the queue and downloading it.",
+  "flow": "One page, no wizard: main[data-mcp-target=\"studio\"] holds the drop target, the engine choice and the job queue at once. Set the file input, pick an engine with [data-mcp-target=\"model-selector\"], press button[data-mcp-action=\"process-queue\"] when the queue has something in it, then poll li[data-job-id]. There is no in-app preview: judge a result by running the queue and downloading it.",
   "engines": {
     "webaudio": "Pure-JS voice-band chain (high-pass, expander, compressor, limiter) rendered at 16 kHz.",
     "rnnoise": "Real RNNoise WebAssembly at its native 48 kHz, rendered through an offline audio graph."
@@ -72,10 +72,8 @@
     }
   ],
   "domHooks": {
-    "wizardStep": "main[data-wizard-step=\"add|engine|run\"]",
-    "wizardStepTab": "[data-mcp-target=\"wizard-step\"][data-step=\"<id>\"]",
-    "upload": "input[data-mcp-action=\"upload\"]",
-    "addedFiles": "[data-mcp-target=\"added-files\"] li[data-job-id]",
+    "studio": "main[data-mcp-target=\"studio\"] — present as soon as the page renders, on every route",
+    "upload": "input[data-mcp-action=\"upload\"] — hidden file input; agents set `.files` or dispatch `change`",
     "modelSelector": "[data-mcp-target=\"model-selector\"][data-model-id=\"webaudio|rnnoise|deepfilternet\"]",
     "processQueue": "button[data-mcp-action=\"process-queue\"]",
     "startOver": "button[data-mcp-action=\"start-over\"]",
@@ -83,6 +81,7 @@
     "downloadResult": "a[data-mcp-action=\"download-result\"][data-job-id=\"<uuid>\"]",
     "exportZip": "button[data-mcp-action=\"export-zip\"]",
     "diagnostics": "[data-mcp-target=\"diagnostics\"]",
+    "buildMarker": "[data-mcp-target=\"build-marker\"] — the commit and build time the page is running",
     "jobRow": "li[data-job-id=\"<uuid>\"][data-status=\"queued|preparing|processing|completed|error\"][data-job-model=\"webaudio|rnnoise\"][data-job-decoder=\"wav reader|mediabunny|ffmpeg\"]"
   },
   "urlParameters": {

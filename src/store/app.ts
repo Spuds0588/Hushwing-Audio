@@ -6,23 +6,14 @@ import { fileNameOf, isVideo } from '../lib/filekit'
 import { isModelId } from '../lib/models'
 
 /**
- * The studio is a three-step wizard, and the step lives here so that anything
- * which changes the queue can move the user along with it — a drop, an
- * `?autostart=true` boot, or the headless API queueing a file.
+ * The studio is one page, so there is no step to track: dropping a file puts it
+ * in the queue, and everything the queue needs (engine, progress) is already on
+ * screen next to it. Anything that changes the queue is visible immediately.
  */
-export type WizardStep = 'add' | 'engine' | 'run'
-
-export const WIZARD_STEPS: { id: WizardStep; label: string; hint: string }[] = [
-  { id: 'add', label: 'Add files', hint: 'Drop the recordings you want cleaned up' },
-  { id: 'engine', label: 'Pick an engine', hint: 'Choose how the noise gets removed' },
-  { id: 'run', label: 'Process', hint: 'Follow the queue and download the results' },
-]
 
 interface AppState {
   /** Model used for newly queued jobs, and for every job still waiting. */
   model: ModelId
-  /** Which wizard step is on screen. */
-  step: WizardStep
   /** Mirror of the `?debug=true` URL flag. */
   showDebug: boolean
   /** Mirror of the `?autostart=true` URL flag. */
@@ -32,7 +23,6 @@ interface AppState {
   jobs: Job[]
 
   setModel: (model: ModelId) => void
-  setStep: (step: WizardStep) => void
   setShowDebug: (value: boolean) => void
   setAutostart: (value: boolean) => void
   setProcessing: (value: boolean) => void
@@ -48,7 +38,6 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set) => ({
   model: 'webaudio',
-  step: 'add',
   showDebug: false,
   autostart: false,
   processing: false,
@@ -63,7 +52,6 @@ export const useAppStore = create<AppState>((set) => ({
       jobs: state.jobs.map((job) => (job.status === 'queued' ? { ...job, model } : job)),
     })),
 
-  setStep: (step) => set({ step }),
   setShowDebug: (showDebug) => set({ showDebug }),
   setAutostart: (autostart) => set({ autostart }),
   setProcessing: (processing) => set({ processing }),
@@ -87,13 +75,9 @@ export const useAppStore = create<AppState>((set) => ({
       createdAt: Date.now(),
     }
 
-    set((state) => ({
-      jobs: [...state.jobs, job],
-      // Dropping a file is the end of step one, whichever path got us here. If a
-      // batch is already running, go straight back to it: the new file simply
-      // joins the queue instead of asking for an engine it cannot have.
-      step: state.step === 'add' ? (state.processing ? 'run' : 'engine') : state.step,
-    }))
+    // A drop while a batch is draining just appends: the queue runner re-reads the
+    // store after every job, so the new file is picked up rather than stranded.
+    set((state) => ({ jobs: [...state.jobs, job] }))
     logger.info(`queued ${job.id} (${model}, ${job.sourceKind})`)
     return job
   },
@@ -133,7 +117,7 @@ export const useAppStore = create<AppState>((set) => ({
       ),
     })),
 
-  resetQueue: () => set({ jobs: [], processing: false, step: 'add' }),
+  resetQueue: () => set({ jobs: [], processing: false }),
 }))
 
 /** Read `?model=`, `?autostart=` and `?debug=` off a query string (AGENTS.md §6). */

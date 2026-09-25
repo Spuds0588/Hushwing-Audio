@@ -44,7 +44,7 @@ export const MODEL_SPECS: ModelSpec[] = [
     ready: true,
     inferenceRate: 48_000,
     implementation:
-      'Real RNNoise (Shiguredo WebAssembly build) driven through the browser audio graph, with the same binary driving the live A/B preview.',
+      'Real RNNoise (Shiguredo WebAssembly build) driven through an offline audio graph in the page — the same path the delivered file takes.',
   },
   {
     id: 'deepfilternet',
